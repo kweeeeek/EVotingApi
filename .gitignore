@@ -1,0 +1,11 @@
+﻿.vs/
+bin/
+obj/
+logs/
+*.user
+*.suo
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.Local.json
