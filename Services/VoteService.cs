@@ -107,7 +107,16 @@ namespace EVoting.Api.Services
         ///
         /// Receipt code uses CSPRNG.
         /// </summary>
-        public async Task<string> CastVotesAsync(
+        public Task<string> CastVotesAsync(
+            int memberId,
+            int eventId,
+            List<VoteSelectionItem> selections,
+            CancellationToken ct)
+            => RetryOnDeadlockAsync(
+                () => CastVotesOnceAsync(memberId, eventId, selections, ct),
+                ct);
+
+        private async Task<string> CastVotesOnceAsync(
             int memberId,
             int eventId,
             List<VoteSelectionItem> selections,
@@ -211,7 +220,19 @@ namespace EVoting.Api.Services
         /// fresh member/event/candidate validation because this endpoint is
         /// authenticated as the kiosk rather than the voter.
         /// </summary>
-        public async Task<(string ReceiptCode, bool WasReplay)> CastOfflineVoteAsync(
+        public Task<(string ReceiptCode, bool WasReplay)> CastOfflineVoteAsync(
+            int memberId,
+            int eventId,
+            List<VoteSelectionItem> selections,
+            string clientReceiptCode,
+            DateTime castAtUtc,
+            CancellationToken ct)
+            => RetryOnDeadlockAsync(
+                () => CastOfflineVoteOnceAsync(
+                    memberId, eventId, selections, clientReceiptCode, castAtUtc, ct),
+                ct);
+
+        private async Task<(string ReceiptCode, bool WasReplay)> CastOfflineVoteOnceAsync(
             int memberId,
             int eventId,
             List<VoteSelectionItem> selections,
@@ -418,6 +439,55 @@ namespace EVoting.Api.Services
                 await tx.RollbackAsync(ct);
                 throw;
             }
+        }
+
+        // ── Deadlock retry ────────────────────────────────────────────────
+        // Concurrent ballots for DIFFERENT members can deadlock in MySQL: the
+        // "SELECT ... FOR UPDATE" on a voterlogs row that does not exist yet
+        // takes gap locks under REPEATABLE READ, and two such transactions then
+        // block each other's INSERT. MySQL aborts one with error 1213 and asks
+        // the client to retry. The whole ballot is one transaction that was
+        // rolled back, so re-running it from scratch is safe: nothing was
+        // written, and the duplicate-vote checks run again on the retry.
+        private const int MaxDeadlockAttempts = 4;
+
+        private async Task<T> RetryOnDeadlockAsync<T>(
+            Func<Task<T>> operation,
+            CancellationToken ct)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return await operation();
+                }
+                catch (Exception ex) when (
+                    attempt < MaxDeadlockAttempts && IsDeadlock(ex))
+                {
+                    // Drop entities from the failed attempt so the retry starts clean.
+                    _db.ChangeTracker.Clear();
+
+                    _logger.LogWarning(
+                        "Deadlock while recording vote (attempt {Attempt}/{Max}); retrying.",
+                        attempt,
+                        MaxDeadlockAttempts);
+
+                    await Task.Delay(
+                        Random.Shared.Next(15, 60) * attempt,
+                        ct);
+                }
+            }
+        }
+
+        private static bool IsDeadlock(Exception? ex)
+        {
+            for (; ex != null; ex = ex.InnerException)
+            {
+                if (ex is MySqlConnector.MySqlException my &&
+                    my.ErrorCode == MySqlConnector.MySqlErrorCode.LockDeadlock)
+                    return true;
+            }
+            return false;
         }
 
         // ── Shared validation ─────────────────────────────────────────────
