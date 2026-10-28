@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Collections.Concurrent;
 using System.Security.Claims;
 
 namespace EVoting.Api.Controllers
@@ -354,7 +355,58 @@ namespace EVoting.Api.Controllers
             }
         }
 
+        // ── Live-update coalescing ────────────────────────────────────────
+        // Every successful vote used to start its own PushLiveUpdatesCoreAsync,
+        // which counts every eligible member, counts voter logs and GROUPs BY
+        // every vote cast in the event. That is O(votes so far) work PER VOTE,
+        // unbounded in concurrency, each on its own pooled DB connection. In a
+        // load test at ~10 voters/s it saturated MySQL CPU, exhausted the
+        // connection pool ("All pooled connections are in use") and turned
+        // vote and voter-verify requests into 500s once the event passed ~50k
+        // votes.
+        //
+        // The dashboards only need the latest totals, so pushes are coalesced
+        // per event: at most one runs at a time and at most one every
+        // LivePushMinInterval. Votes that arrive while a push is running or
+        // waiting just mark the event "dirty"; the running loop sends one more
+        // push with the newest data, so the final state is always delivered.
+        private sealed class LivePushState
+        {
+            public int Running;
+            public int Dirty;
+        }
+
+        private static readonly ConcurrentDictionary<int, LivePushState> LivePushStates = new();
+        private static readonly TimeSpan LivePushMinInterval = TimeSpan.FromSeconds(2);
+
         private async Task PushLiveUpdatesAsync(int eventId)
+        {
+            var state = LivePushStates.GetOrAdd(eventId, _ => new LivePushState());
+            Volatile.Write(ref state.Dirty, 1);
+
+            // Someone else is already pushing; they will see Dirty and push again.
+            if (Interlocked.CompareExchange(ref state.Running, 1, 0) != 0)
+                return;
+
+            try
+            {
+                while (Interlocked.Exchange(ref state.Dirty, 0) == 1)
+                {
+                    await PushLiveUpdatesCoreAsync(eventId);
+                    await Task.Delay(LivePushMinInterval);
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref state.Running, 0);
+            }
+
+            // A vote may have landed between the last Dirty check and Running = 0.
+            if (Volatile.Read(ref state.Dirty) == 1)
+                _ = PushLiveUpdatesAsync(eventId);
+        }
+
+        private async Task PushLiveUpdatesCoreAsync(int eventId)
         {
             // Deliberately fire-and-forget from both call sites above — the
             // HTTP response must not wait on a SignalR broadcast. Which means
