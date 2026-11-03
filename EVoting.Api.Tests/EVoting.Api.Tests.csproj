@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit + contract tests for the ADDITIVE API changes made for the Registration/Kiosk modernization:
+      * Registration role on GET /api/v1/events/current
+      * POST /api/v1/auth/registration-station-login (StationCredentialPolicy, token claims)
+      * optional client receipt code on POST /api/v1/votes (ReceiptCodeFormat, DTO compatibility)
+    Run:  dotnet test EVoting.Api.Tests/EVoting.Api.Tests.csproj
+    NOTE: these tests were written where NuGet is unreachable. They WERE executed there (all passing) through a minimal xUnit-compatible runner, against
+    ASP.NET Core 8 and IdentityModel 7.7.3 (this project targets net9.0 with the IdentityModel version the API itself references) - see
+    docs/07-BUILD-AND-TEST-RESULTS.md in the Registration/Kiosk package. The first run with the real xUnit on .NET 9 has NOT happened yet:
+    run `dotnet test EVoting.Api.Tests/EVoting.Api.Tests.csproj` before deploying the patch.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EVoting.Api.csproj" />
+  </ItemGroup>
+
+</Project>

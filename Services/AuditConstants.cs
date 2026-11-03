@@ -38,6 +38,8 @@ namespace EVoting.Api.Services
         public const string Event = "Event";
         public const string Candidacy = "Candidacy";
         public const string Report = "Report";
+        /// <summary>A non-interactive Registration Station (sign-in audit rows). Additive.</summary>
+        public const string Station = "Station";
     }
 
     /// <summary>Pure helpers for building AuditLogs rows (no HTTP, no EF queries) — safe to use from background services.</summary>

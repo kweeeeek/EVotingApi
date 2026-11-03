@@ -170,6 +170,7 @@ namespace EVoting.Api.Services
                 {
                     await _hub.Clients.Group(ElectionHub.KioskGroup).SendAsync("EventStatusChanged", payload, ct);
                     await _hub.Clients.Group(ElectionHub.AdminGroup).SendAsync("EventStatusChanged", payload, ct);
+                    await _hub.Clients.Group(ElectionHub.RegistrationGroup).SendAsync("EventStatusChanged", payload, ct);
                 }
                 catch (Exception ex)
                 {

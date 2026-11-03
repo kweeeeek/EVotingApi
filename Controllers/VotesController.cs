@@ -61,6 +61,51 @@ namespace EVoting.Api.Controllers
                     Detail = "The event in your token does not match the submitted event."
                 });
 
+            // ── ADDITIVE: idempotent submission (timeout-after-commit safety) ───────
+            // Only taken when the kiosk proposes its own receipt code. A caller that
+            // sends no ReceiptCode - every kiosk deployed before this change - falls
+            // straight through to the original code path below, untouched.
+            if (!string.IsNullOrWhiteSpace(req.ReceiptCode))
+            {
+                var clientReceipt = req.ReceiptCode.Trim();
+
+                if (!ReceiptCodeFormat.IsValid(clientReceipt, eventId))
+                    return BadRequest(new ApiError
+                    {
+                        Error  = "Invalid receipt code.",
+                        Detail = "The receipt code must look like EVT{event}-{8 hex}-{8 hex} and belong to the voter's election.",
+                        Code   = "INVALID_RECEIPT_CODE"
+                    });
+
+                (string ReceiptCode, bool WasReplay, DateTime VotedAtUtc) outcome;
+                try
+                {
+                    outcome = await _voteService.CastVotesWithClientReceiptAsync(
+                        memberId, eventId, req.Selections, clientReceipt, ct);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("already voted"))
+                {
+                    return Conflict(new ApiError { Error = ex.Message });
+                }
+
+                // A replay changed nothing in the database: no dashboard push, no MemberVoted broadcast.
+                if (!outcome.WasReplay)
+                {
+                    _ = PushLiveUpdatesAsync(eventId);
+                    _ = PushMemberVotedAsync(eventId, memberId);
+                }
+
+                return Ok(new VoteSubmitResponse
+                {
+                    Message = outcome.WasReplay
+                        ? "This vote was already recorded - no action needed."
+                        : "Your vote has been recorded successfully.",
+                    ReceiptCode      = outcome.ReceiptCode,
+                    VotedAt          = outcome.VotedAtUtc,
+                    AlreadyProcessed = outcome.WasReplay
+                });
+            }
+
             if (await _voteService.HasVotedAsync(memberId, eventId, ct))
                 return Conflict(new ApiError { Error = "You have already voted in this election." });
 

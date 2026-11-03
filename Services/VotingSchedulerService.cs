@@ -209,6 +209,8 @@ namespace EVoting.Api.Services
                         _hub.Clients.Group(ElectionHub.KioskGroup)
                             .SendAsync("EventStatusChanged", payload, ct),
                         _hub.Clients.Group(ElectionHub.AdminGroup)
+                            .SendAsync("EventStatusChanged", payload, ct),
+                        _hub.Clients.Group(ElectionHub.RegistrationGroup)
                             .SendAsync("EventStatusChanged", payload, ct)
                     );
 

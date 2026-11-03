@@ -7,6 +7,14 @@
     <RootNamespace>EVoting.Api</RootNamespace>
   </PropertyGroup>
 
+  <!-- The test project lives in a sub-folder of this project. Without these lines the SDK's default globbing would compile its
+       sources (which need xUnit) into the API itself, and the API would no longer build. -->
+  <ItemGroup>
+    <Compile Remove="EVoting.Api.Tests/**" />
+    <EmbeddedResource Remove="EVoting.Api.Tests/**" />
+    <None Remove="EVoting.Api.Tests/**" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Database -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />

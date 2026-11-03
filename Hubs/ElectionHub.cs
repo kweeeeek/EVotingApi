@@ -17,6 +17,13 @@ namespace EVoting.Api.Hubs
         // Group name constants — use these everywhere to avoid typos
         public const string AdminGroup  = "admins";
         public const string KioskGroup  = "kiosks";
+        /// <summary>
+        /// ADDITIVE (Registration Station): stations authenticated as role "Registration" (interactive login or
+        /// the non-interactive station token) join this group so they receive EventStatusChanged and refresh their
+        /// roster the moment an election opens or closes. Before this group existed a Registration connection was
+        /// accepted but belonged to no group, so it never received any push.
+        /// </summary>
+        public const string RegistrationGroup = "registration-stations";
         public static string EventGroup(int eventId) => $"event:{eventId}";
 
         // ── Server → client broadcasts (sent via IHubContext, not hub methods) ──
@@ -92,6 +99,11 @@ namespace EVoting.Api.Hubs
                     // Notify admins that a kiosk just came online
                     await Clients.Group(AdminGroup).SendAsync("KioskStatusChanged",
                         _kioskStatus.GetStatus(kioskId));
+                    break;
+
+                case "Registration":
+                    // Receives EventStatusChanged only (no turnout, results or ballot data).
+                    await Groups.AddToGroupAsync(connId, RegistrationGroup);
                     break;
             }
 
