@@ -71,8 +71,13 @@ namespace EVoting.Api.Controllers
         }
 
         // ── GET /api/v1/events/current ────────────────────────────────────────
+        // ADDITIVE (Registration Station, API-only migration): the Registration role
+        // is now also allowed here. The Registration Station cannot read the legacy
+        // Events/EventBranches tables directly any more (it no longer has database
+        // access), and this is the only place the participating branches of the open
+        // election are published. Read-only, same payload the Kiosk already receives.
         [HttpGet("current")]
-        [Authorize(Roles = "Kiosk,Voter,Admin")]
+        [Authorize(Roles = "Kiosk,Voter,Admin,Registration")]
         public async Task<IActionResult> GetCurrent(CancellationToken ct)
         {
             if (!int.TryParse(_config["Cache:CurrentEventTtlSeconds"], out int ttlSeconds))

@@ -39,11 +39,13 @@ namespace EVoting.Api.Controllers
         /// Login/logout audit rows are best-effort: an audit-table problem must never prevent an administrator
         /// from signing in (all DATA changes, by contrast, are audited atomically and fail closed).
         /// </summary>
-        private async Task TryAuditAsync(string action, int? userId, string? username, string? details, CancellationToken ct)
+        private async Task TryAuditAsync(
+            string action, int? userId, string? username, string? details, CancellationToken ct,
+            string entityType = AuditEntities.User)
         {
             try
             {
-                await _audit.WriteAsync(action, AuditEntities.User, userId, details, userId, username, ct);
+                await _audit.WriteAsync(action, entityType, userId, details, userId, username, ct);
             }
             catch (Exception ex)
             {
@@ -213,6 +215,84 @@ namespace EVoting.Api.Controllers
                 ExpiresIn = expiry * 60,
                 Role = "Registration"
             });
+        }
+
+        // ── POST /api/v1/auth/registration-station-login ──────────────────────
+        /// <summary>
+        /// ADDITIVE. Non-interactive sign-in of a Registration Station: the desktop app signs itself in at start-up with a
+        /// credential that was provisioned on that PC (it is not part of the application source and nobody types it).
+        ///
+        /// What this does and does not prove:
+        ///  * The station id (normally the PC's machine name) is only a LABEL. Knowing it proves nothing.
+        ///  * The StationSecret is what authenticates, checked in constant time against the enrolment held by this server
+        ///    (per-station SHA-256 digests, or an optional shared enrolment secret). Nothing is ever compared in plain text.
+        ///  * The token carries the "Registration" role only - no user id, no permission claims - so it reaches exactly the
+        ///    endpoints the interactive Registration login reaches and no administrative one.
+        ///
+        /// Same safeguards as kiosk-login/admin-login: its own rate-limit policy, 503 when the server has no enrolment
+        /// configured (never "open"), one uniform 401 for every kind of wrong credential, audit rows for success and
+        /// failure, and the secret is never logged.
+        /// </summary>
+        [HttpPost("registration-station-login")]
+        [AllowAnonymous]
+        [EnableRateLimiting("station-login")]
+        public async Task<IActionResult> RegistrationStationLogin(
+            [FromBody] RegistrationStationLoginRequest req,
+            [FromServices] StationCredentialPolicy policy,
+            CancellationToken ct)
+        {
+            var outcome = policy.Validate(req.StationId, req.StationSecret, out var stationId);
+
+            if (outcome == StationAuthOutcome.NotConfigured)
+            {
+                _logger.LogError(
+                    "Registration-station sign-in refused: no station credential is configured " +
+                    "(set EVOTING_REGISTRATION_STATIONS and/or EVOTING_REGISTRATION_STATION_SECRET).");
+                return StatusCode(503, new ApiError
+                {
+                    Error = "Registration Station sign-in is not available: this server has no station credential configured.",
+                    Code = "STATION_AUTH_NOT_CONFIGURED"
+                });
+            }
+
+            if (outcome != StationAuthOutcome.Authenticated)
+            {
+                // The id came from the caller: clip it and keep only harmless characters before it reaches a log line.
+                var label = SafeStationLabel(req.StationId);
+                _logger.LogWarning("Failed registration-station sign-in: StationId={StationId} IP={IP}",
+                    label, HttpContext.Connection.RemoteIpAddress);
+                await TryAuditAsync(AuditActions.LoginFailed, null, $"station:{label}",
+                    "Invalid station credentials.", ct, AuditEntities.Station);
+                return Unauthorized(new ApiError
+                {
+                    Error = "Invalid station credentials.",
+                    Code = "INVALID_STATION_CREDENTIALS"
+                });
+            }
+
+            var token = _tokens.GenerateRegistrationStationToken(stationId);
+            var expiry = int.TryParse(_config["Jwt:StationTokenExpiryMinutes"], out int m) && m > 0 ? m : 480;
+
+            _logger.LogInformation("Registration-station sign-in: StationId={StationId}", stationId);
+            await TryAuditAsync(AuditActions.Login, null, $"station:{stationId}",
+                "Registration Station signed in.", ct, AuditEntities.Station);
+
+            return Ok(new TokenResponse
+            {
+                AccessToken = token,
+                ExpiresIn = expiry * 60,
+                Role = "Registration"
+            });
+        }
+
+        /// <summary>Caller-supplied station id made safe for log lines and the 50-character audit username column.</summary>
+        private static string SafeStationLabel(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return "(none)";
+            var s = raw.Trim();
+            if (s.Length > 32) s = s.Substring(0, 32);
+            var chars = s.Select(ch => char.IsAsciiLetterOrDigit(ch) || ch == '.' || ch == '_' || ch == '-' ? ch : '?');
+            return new string(chars.ToArray());
         }
 
         // ── POST /api/v1/auth/kiosk-login ─────────────────────────────────────

@@ -15,6 +15,20 @@ namespace EVoting.Api.Services
             List<VoteSelectionItem> selections,
             CancellationToken ct);
 
+        /// <summary>
+        /// ADDITIVE twin of CastVotesAsync for callers that propose their own receipt code (see
+        /// SubmitVoteRequest.ReceiptCode). Same transaction, same row lock, same validation - the only differences are that
+        /// the stored receipt IS the proposed one, and that if this member already voted with exactly that receipt the call
+        /// returns it again (WasReplay=true, nothing written) instead of throwing "already voted". A different receipt for an
+        /// already-voted member is still the normal "already voted" conflict.
+        /// </summary>
+        Task<(string ReceiptCode, bool WasReplay, DateTime VotedAtUtc)> CastVotesWithClientReceiptAsync(
+            int memberId,
+            int eventId,
+            List<VoteSelectionItem> selections,
+            string clientReceiptCode,
+            CancellationToken ct);
+
         Task<bool> HasVotedAsync(
             int memberId,
             int eventId,
@@ -205,6 +219,164 @@ namespace EVoting.Api.Services
                     selections.Count);
 
                 return receiptCode;
+            }
+            catch
+            {
+                await tx.RollbackAsync(ct);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// ADDITIVE: online vote with a CLIENT-PROPOSED receipt code (idempotent retry; see the interface comment).
+        /// Written as a separate method on purpose so the original CastVotesAsync path that every deployed kiosk uses today
+        /// is not touched by this change.
+        ///
+        /// Duplicate-vote safety is identical: SELECT ... FOR UPDATE on the member's voterlogs row inside a REPEATABLE READ
+        /// transaction, plus the UNIQUE (MemberId, EventId) index on voterlogs and (MemberId, EventId, CandidacyId) on votes.
+        ///
+        /// It takes the same gap lock on a voterlogs row that may not exist yet as CastVotesAsync does, so two ballots of
+        /// different members can deadlock here in the same way (MySQL error 1213). It therefore runs inside the same
+        /// RetryOnDeadlockAsync: a deadlock rolls the whole transaction back, the retry starts from scratch and every
+        /// duplicate and replay check runs again.
+        /// </summary>
+        public Task<(string ReceiptCode, bool WasReplay, DateTime VotedAtUtc)> CastVotesWithClientReceiptAsync(
+            int memberId,
+            int eventId,
+            List<VoteSelectionItem> selections,
+            string clientReceiptCode,
+            CancellationToken ct)
+            => RetryOnDeadlockAsync(
+                () => CastVotesWithClientReceiptOnceAsync(
+                    memberId, eventId, selections, clientReceiptCode, ct),
+                ct);
+
+        private async Task<(string ReceiptCode, bool WasReplay, DateTime VotedAtUtc)> CastVotesWithClientReceiptOnceAsync(
+            int memberId,
+            int eventId,
+            List<VoteSelectionItem> selections,
+            string clientReceiptCode,
+            CancellationToken ct)
+        {
+            if (!ReceiptCodeFormat.IsValid(clientReceiptCode, eventId))
+            {
+                throw new ArgumentException(
+                    "The receipt code is not valid for this election.",
+                    nameof(clientReceiptCode));
+            }
+
+            if (selections == null || selections.Count == 0)
+                throw new ArgumentException(
+                    "No candidates selected.",
+                    nameof(selections));
+
+            var now = DateTime.UtcNow;
+
+            await using var tx = await _db.Database
+                .BeginTransactionAsync(
+                    IsolationLevel.RepeatableRead,
+                    ct);
+
+            try
+            {
+                var logs = await _db.VoterLogs
+                    .FromSqlRaw(
+                        "SELECT * FROM voterlogs " +
+                        "WHERE MemberId = {0} AND EventId = {1} FOR UPDATE",
+                        memberId,
+                        eventId)
+                    .ToListAsync(ct);
+
+                var log = logs.FirstOrDefault();
+
+                if (log?.HasVoted == true)
+                {
+                    if (string.Equals(
+                            log.ReceiptCode,
+                            clientReceiptCode,
+                            StringComparison.Ordinal))
+                    {
+                        // The first attempt committed and only its response was lost. Nothing is written.
+                        await tx.RollbackAsync(ct);
+
+                        _logger.LogInformation(
+                            "Online vote replay recognized (already recorded): MemberId={MemberId} " +
+                            "EventId={EventId} Receipt={Receipt}",
+                            memberId,
+                            eventId,
+                            clientReceiptCode);
+
+                        return (clientReceiptCode, true, log.VotedAt ?? now);
+                    }
+
+                    throw new InvalidOperationException(
+                        "Member has already voted in this event.");
+                }
+
+                // The proposed code must not already belong to somebody else's vote.
+                var receiptTaken = await _db.VoterLogs
+                    .AnyAsync(v => v.ReceiptCode == clientReceiptCode, ct);
+
+                if (receiptTaken)
+                {
+                    throw new ArgumentException(
+                        "The receipt code is already in use.",
+                        nameof(clientReceiptCode));
+                }
+
+                var ev = await LoadActiveEventOrThrowAsync(
+                    eventId,
+                    ct);
+
+                await ValidateSelectionsOrThrowAsync(
+                    selections,
+                    ev,
+                    ct);
+
+                foreach (var sel in selections)
+                {
+                    _db.Votes.Add(new VoteEntity
+                    {
+                        MemberId = memberId,
+                        EventId = eventId,
+                        CandidacyId = sel.CandidacyId,
+                        Position = sel.Position,
+                        VotedAt = now,
+                        ReceiptCode = clientReceiptCode
+                    });
+                }
+
+                if (log == null)
+                {
+                    _db.VoterLogs.Add(new VoterLogEntity
+                    {
+                        MemberId = memberId,
+                        EventId = eventId,
+                        HasVoted = true,
+                        VotedAt = now,
+                        ReceiptCode = clientReceiptCode
+                    });
+                }
+                else
+                {
+                    log.HasVoted = true;
+                    log.VotedAt = now;
+                    log.ReceiptCode = clientReceiptCode;
+                }
+
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+
+                _logger.LogInformation(
+                    "Vote committed (client receipt): MemberId={MemberId} " +
+                    "EventId={EventId} Receipt={Receipt} " +
+                    "Selections={Count}",
+                    memberId,
+                    eventId,
+                    clientReceiptCode,
+                    selections.Count);
+
+                return (clientReceiptCode, false, now);
             }
             catch
             {

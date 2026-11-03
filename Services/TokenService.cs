@@ -10,6 +10,12 @@ namespace EVoting.Api.Services
     {
         string GenerateAdminToken(UserEntity user);
         string GenerateRegistrationToken(UserEntity user);
+        /// <summary>
+        /// ADDITIVE: token for a non-interactive Registration Station. Same "Registration" role as the interactive login (so
+        /// every [Authorize(Roles = "Registration,...")] endpoint accepts it) but NO user id and NO permission claims: it can
+        /// never satisfy a [RequirePermission] check, which keeps it strictly least-privilege.
+        /// </summary>
+        string GenerateRegistrationStationToken(string stationId);
         string GenerateKioskToken(string kioskId);
         string GenerateVoterToken(int memberId, int eventId, string memberName);
     }
@@ -80,6 +86,28 @@ namespace EVoting.Api.Services
 
             return BuildToken(claims, regExpiry);
         }
+
+        // Token for a non-interactive Registration Station (see ITokenService). NameIdentifier is deliberately NOT numeric:
+        // RequirePermissionAttribute.UserIdOf() therefore yields null and every permission-gated endpoint refuses it.
+        public string GenerateRegistrationStationToken(string stationId)
+        {
+            var label = $"station:{stationId}";
+
+            var claims = new List<Claim>
+            {
+                new(ClaimTypes.NameIdentifier, label),
+                new(ClaimTypes.Name,           label),
+                new(ClaimTypes.Role,           "Registration"),
+                new("stationId",               stationId),
+                new("authKind",                "station"),
+            };
+
+            return BuildToken(claims, StationTokenExpiryMinutes());
+        }
+
+        /// <summary>Lifetime of a station token in minutes (Jwt:StationTokenExpiryMinutes, default 480). AuthController reports the same value in ExpiresIn.</summary>
+        private int StationTokenExpiryMinutes() =>
+            int.TryParse(_config["Jwt:StationTokenExpiryMinutes"], out int m) && m > 0 ? m : 480;
 
         //gagawa ng token para sa kiosk, kasama ang mga claims tulad ng kiosk id at role
         public string GenerateKioskToken(string kioskId)

@@ -151,6 +151,18 @@ try
     EVoting.Api.Security.SecretSettings.RejectPlaceholder("EVOTING_KIOSK_SECRET / Security:KioskSecret",
         Environment.GetEnvironmentVariable("EVOTING_KIOSK_SECRET") ?? builder.Configuration["Security:KioskSecret"]);
 
+    // ── Registration Station enrolment (non-interactive sign-in) ──────────────
+    // Loaded once at start-up. Template text in any of these settings stops start-up (same rule as the secrets above);
+    // a malformed individual entry is skipped (that station simply cannot sign in) and named in the log - never its value.
+    var stationPolicy = EVoting.Api.Security.StationCredentialSettings.Load(builder.Configuration);
+    foreach (var rejected in stationPolicy.RejectedEntries)
+        Log.Error("Registration station enrolment entry ignored: {Reason}", rejected);
+    if (stationPolicy.IsConfigured)
+        Log.Information("Registration station sign-in enabled ({Count} station(s) enrolled individually)", stationPolicy.EnrolledStationCount);
+    else
+        Log.Warning("Registration station sign-in is NOT configured (EVOTING_REGISTRATION_STATIONS / EVOTING_REGISTRATION_STATION_SECRET); stations cannot sign in non-interactively.");
+    builder.Services.AddSingleton(stationPolicy);
+
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(opts =>
         {
@@ -238,6 +250,18 @@ try
             // Small queue: if all kiosks boot simultaneously, queue absorbs the burst
             // instead of immediately returning 429 to half of them.
             o.QueueLimit = 5;
+        });
+
+        // ADDITIVE: Registration Stations sign themselves in at start-up (a morning rush of stations
+        // is one login each, then one every ~8 hours). Failed attempts count against the same budget,
+        // so a guessing flood is throttled; the station client treats 429 as "retry later", not as bad credentials.
+        opts.AddFixedWindowLimiter("station-login", o =>
+        {
+            o.Window = TimeSpan.FromMinutes(1);
+            o.PermitLimit = int.TryParse(
+                builder.Configuration["RateLimit:StationLoginPerMinute"], out int sl) ? sl : 30;
+            o.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+            o.QueueLimit = 10;
         });
 
         opts.AddFixedWindowLimiter("voter-verify", o =>
