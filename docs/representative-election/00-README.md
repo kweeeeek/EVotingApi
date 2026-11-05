@@ -18,6 +18,7 @@ some of the planned file names, so those names are fixed.
 | `10-ga-regression-report.md` | General Assembly differential regression (original build vs new build) | **planned** |
 | `11-deployment.md` | Deployment order, configuration, post-deploy steps | **planned** |
 | `12-change-ledger.md` | Final change ledger incl. rollback instructions (Part 16/17) | **planned** |
+| `STATUS.md` | Save point: what exists, what was checked, what remains, limits of the evidence | written (2026-11-05) |
 
 Honest status of the whole task: the API side is implemented and was tested against scratch copies of the supplied database; the Admin WPF screens are implemented and were tested
 at view-model level against the real API plus a static XAML check, but WPF rendering and the Kiosk application itself were **not** run. Nothing was run against a production database.
