@@ -433,7 +433,8 @@ namespace EVoting.Api.Controllers
                     Venue = ev.Venue,
                     ScheduleFrom = ev.ScheduleFrom,
                     ScheduleTo = ev.ScheduleTo,
-                    Status = ev.Status
+                    Status = ev.Status,
+                    EventType = ev.EventType
                 }
             });
         }

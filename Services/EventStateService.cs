@@ -47,15 +47,17 @@ namespace EVoting.Api.Services
         private readonly IDistributedCache _cache;
         private readonly IHubContext<ElectionHub> _hub;
         private readonly ILogger<EventStateService> _logger;
+        private readonly IEventOpenGate _gate;
 
         public EventStateService(ApiDbContext db, IAuditService audit, IDistributedCache cache,
-                                 IHubContext<ElectionHub> hub, ILogger<EventStateService> logger)
+                                 IHubContext<ElectionHub> hub, ILogger<EventStateService> logger, IEventOpenGate gate)
         {
             _db = db;
             _audit = audit;
             _cache = cache;
             _hub = hub;
             _logger = logger;
+            _gate = gate;
         }
 
         public async Task<EventStateResult> OpenAsync(int eventId, bool closeOthers, CancellationToken ct)
@@ -69,6 +71,21 @@ namespace EVoting.Api.Services
 
                 if (ev.Status == "Opened")
                     return new EventStateResult { Ok = true, EventId = eventId, Status = "Opened", Changed = false };
+
+                // Readiness (Representative roster complete, eligibility recalculated, MaxCandidates respected ...). Same checks as the scheduler.
+                var readiness = await _gate.EvaluateAsync(ev, ct);
+                if (!readiness.CanOpen)
+                {
+                    await _audit.WriteAsync(AuditActions.OpenEventBlocked, AuditEntities.Event, ev.EventId,
+                        $"Opening '{ev.Title}' was refused: {string.Join(" ", readiness.Issues)}", ct: ct);
+                    return new EventStateResult
+                    {
+                        StatusCode = StatusCodes.Status409Conflict,
+                        Error = "The election is not ready to open.",
+                        Detail = string.Join(" ", readiness.Issues.Select((issue, i) => $"({i + 1}) {issue}")),
+                        Code = RepCodes.NotReady
+                    };
+                }
 
                 var others = await _db.Events
                     .Where(e => e.IsActive && e.Status == "Opened" && e.EventId != eventId)
@@ -94,6 +111,7 @@ namespace EVoting.Api.Services
                         $"Event '{o.Title}' closed automatically because '{ev.Title}' was opened.");
                 }
 
+                await _gate.StampOpenedAsync(ev, now, ct);     // freezes a Representative roster, records the eligibility thresholds
                 ev.Status = "Opened";
                 ev.UpdatedAt = now;
                 _audit.Stage(AuditActions.OpenEvent, AuditEntities.Event, ev.EventId, $"Event '{ev.Title}' opened.");
@@ -103,6 +121,8 @@ namespace EVoting.Api.Services
 
                 var changed = others.Append(ev).ToList();
                 var warning = await PublishAsync(changed, ct);
+                if (readiness.Warnings.Count > 0)
+                    warning = string.Join(" ", new[] { warning }.Concat(readiness.Warnings).Where(w => !string.IsNullOrWhiteSpace(w)));
                 return new EventStateResult
                 {
                     Ok = true, EventId = eventId, Status = "Opened", Changed = true,

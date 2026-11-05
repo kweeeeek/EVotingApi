@@ -802,6 +802,11 @@ namespace EVoting.Api.Services
                     nameof(eventId));
             }
 
+            // A Representative election has its own ballot, vote table and endpoint. The General Assembly vote paths (online,
+            // client-receipt and offline) must never write a General Assembly vote - or mark the voter as having voted - for it.
+            if (!string.Equals(ev.EventType, EventTypes.GeneralAssembly, StringComparison.Ordinal))
+                throw new WrongEventTypeException(ev.EventId, ev.EventType);
+
             return ev;
         }
 

@@ -5,7 +5,6 @@ using EVoting.Api.Security;
 using EVoting.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using System.Text.RegularExpressions;
 
 namespace EVoting.Api.Controllers
@@ -25,13 +24,13 @@ namespace EVoting.Api.Controllers
 
         private readonly ApiDbContext _db;
         private readonly IAuditService _audit;
-        private readonly EligibilityOptions _elig;
+        private readonly IEligibilityService _eligibility;
 
-        public MembersAdminController(ApiDbContext db, IAuditService audit, IOptions<EligibilityOptions> elig)
+        public MembersAdminController(ApiDbContext db, IAuditService audit, IEligibilityService eligibility)
         {
             _db = db;
             _audit = audit;
-            _elig = elig.Value;
+            _eligibility = eligibility;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -222,17 +221,18 @@ namespace EVoting.Api.Controllers
 
         [HttpPost("eligibility-preview")]
         [RequirePermission(PermissionCodes.MemberView, PermissionCodes.MemberAdd, PermissionCodes.MemberEdit)]
-        public IActionResult EligibilityPreview([FromBody] EligibilityPreviewRequest req)
+        public async Task<IActionResult> EligibilityPreview([FromBody] EligibilityPreviewRequest req, CancellationToken ct)
         {
             if (!Enum.TryParse<LoanStatus>(req.LoanStatus, true, out var loan) || !Enum.IsDefined(loan))
                 return Invalid("loanStatus", "Loan status must be None, Active, PastDue or Paid.");
-            var (ok, remarks) = MemberEligibilityPolicy.Evaluate(req.ShareCapital, req.SavingsDeposit, loan, _elig);
+            var rule = await _eligibility.GetOptionsAsync(ct);                     // the thresholds in force NOW (database-backed)
+            var (ok, remarks) = MemberEligibilityPolicy.Evaluate(req.ShareCapital, req.SavingsDeposit, loan, rule);
             return Ok(new EligibilityPreviewResponse
             {
                 IsEligible = ok,
                 Remarks = remarks,
-                MinShareCapital = _elig.MinShareCapital,
-                MinSavingsDeposit = _elig.MinSavingsDeposit
+                MinShareCapital = rule.MinShareCapital,
+                MinSavingsDeposit = rule.MinSavingsDeposit
             });
         }
 
@@ -265,7 +265,7 @@ namespace EVoting.Api.Controllers
             var fail = await ValidateAsync(req, exceptId: null, ct);
             if (fail != null) return fail;
             var loan = Enum.Parse<LoanStatus>(req.LoanStatus, true);
-            var (ok, remarks) = MemberEligibilityPolicy.Evaluate(req.ShareCapital, req.SavingsDeposit, loan, _elig);
+            var (ok, remarks) = await _eligibility.EvaluateAsync(req.ShareCapital, req.SavingsDeposit, loan, ct);
 
             var now = DateTime.Now;
             var m = new MemberEntity
@@ -308,7 +308,7 @@ namespace EVoting.Api.Controllers
             var fail = await ValidateAsync(req, exceptId: id, ct);
             if (fail != null) return fail;
             var loan = Enum.Parse<LoanStatus>(req.LoanStatus, true);
-            var (ok, remarks) = MemberEligibilityPolicy.Evaluate(req.ShareCapital, req.SavingsDeposit, loan, _elig);
+            var (ok, remarks) = await _eligibility.EvaluateAsync(req.ShareCapital, req.SavingsDeposit, loan, ct);
 
             // ONLY the editor-owned columns are written. (The legacy repository called Members.Update(newEntity),
             // which rewrote every column and therefore reset QrIssuedAt to NULL on each edit.)
@@ -579,6 +579,7 @@ namespace EVoting.Api.Controllers
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var plan = new List<Planned>();
             var now = DateTime.Now;
+            var rule = await _eligibility.GetOptionsAsync(ct);          // one snapshot of the thresholds for the whole file
 
             foreach (var row in req.Rows)
             {
@@ -626,7 +627,7 @@ namespace EVoting.Api.Controllers
                     continue;
                 }
 
-                var (ok, remarks) = MemberEligibilityPolicy.Evaluate(share, savings, loan, _elig);
+                var (ok, remarks) = MemberEligibilityPolicy.Evaluate(share, savings, loan, rule);
                 p.Result.IsEligible = ok;
                 p.Result.VotingRemarks = remarks;
 

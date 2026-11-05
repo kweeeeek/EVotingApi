@@ -137,6 +137,15 @@ namespace EVoting.Api.Controllers
             if (ev == null)
                 return NotFound(new ApiError { Error = "Event not found." });
 
+            // Representative elections publish their candidates through the Representative endpoints (paged, no embedded photos).
+            if (ev.EventType != Infrastructure.Entities.EventTypes.GeneralAssembly)
+                return Conflict(new ApiError
+                {
+                    Error = "This is a Representative election; its candidates are not General Assembly candidacies.",
+                    Detail = $"Use GET /api/v1/events/{id}/representative-candidates.",
+                    Code = RepCodes.WrongEventType
+                });
+
             var candidates = await _db.Candidacies
                 .AsNoTracking()
                 .Include(c => c.Member)
@@ -254,6 +263,15 @@ namespace EVoting.Api.Controllers
         [RequirePermission(PermissionCodes.EventView)]
         public async Task<IActionResult> GetResults(int id, CancellationToken ct)
         {
+            var type = await _db.Events.AsNoTracking().Where(e => e.EventId == id).Select(e => e.EventType).FirstOrDefaultAsync(ct);
+            if (type != null && type != Infrastructure.Entities.EventTypes.GeneralAssembly)
+                return Conflict(new ApiError
+                {
+                    Error = "This is a Representative election; use its own results endpoint.",
+                    Detail = $"GET /api/v1/events/{id}/representative-results.",
+                    Code = RepCodes.WrongEventType
+                });
+
             var votes = await _db.Votes
                 .AsNoTracking()
                 .Where(v => v.EventId == id)
@@ -399,6 +417,7 @@ namespace EVoting.Api.Controllers
             ScheduleTo = e.ScheduleTo,
             Status = e.Status,
             IsActive = e.IsActive,
+            EventType = e.EventType,
             Branches = e.EventBranches
                 .Where(eb => eb.Branch != null)
                 .Select(eb => new BranchResponse
@@ -413,20 +432,32 @@ namespace EVoting.Api.Controllers
         [Authorize(Roles = "Kiosk,Admin")]
         public async Task<IActionResult> GetPositionRules(int id, CancellationToken ct)
         {
+            // Explicit order: the rows come back in the order they were saved (the legacy behaviour kiosks rely on to show the positions as
+            // Board of Director, Audit Committee, ...). Without it the unique index on (EventId, Position) added for Representative elections
+            // lets MySQL answer from the index, i.e. alphabetically; the General Assembly regression run (t09) caught that.
             var rules = await _db.EventPositionRules
                 .AsNoTracking()
                 .Where(r => r.EventId == id)
-                .Select(r => new { r.Position, r.MinVotes, r.MaxVotes, r.TotalSeats })
+                .OrderBy(r => r.Id)
+                .Select(r => new { r.Position, r.MinVotes, r.MaxVotes, r.TotalSeats, r.MaxCandidates })
                 .ToListAsync(ct);
 
+            // The legacy defaults are served only to a General Assembly event that has no saved rules. A Representative event with no
+            // rules is not ready to vote, and silently showing General Assembly positions for it would mislead a kiosk.
             if (rules.Count == 0)
+            {
+                var type = await _db.Events.AsNoTracking().Where(e => e.EventId == id).Select(e => e.EventType).FirstOrDefaultAsync(ct);
+                if (type == Infrastructure.Entities.EventTypes.Representative)
+                    return Ok(new { eventId = id, rules });
+
                 rules = new[]
                 {
-                    new { Position = "Board of Director",  MinVotes = 1, MaxVotes = 11, TotalSeats = 11 },
-                    new { Position = "Audit Committee",    MinVotes = 1, MaxVotes = 2,  TotalSeats = 2  },
-                    new { Position = "Election Committee", MinVotes = 1, MaxVotes = 1,  TotalSeats = 1  },
-                    new { Position = "Secretary",          MinVotes = 1, MaxVotes = 2,  TotalSeats = 2  }
+                    new { Position = "Board of Director",  MinVotes = 1, MaxVotes = 11, TotalSeats = 11, MaxCandidates = (int?)null },
+                    new { Position = "Audit Committee",    MinVotes = 1, MaxVotes = 2,  TotalSeats = 2,  MaxCandidates = (int?)null },
+                    new { Position = "Election Committee", MinVotes = 1, MaxVotes = 1,  TotalSeats = 1,  MaxCandidates = (int?)null },
+                    new { Position = "Secretary",          MinVotes = 1, MaxVotes = 2,  TotalSeats = 2,  MaxCandidates = (int?)null }
                 }.ToList();
+            }
 
             return Ok(new { eventId = id, rules });
         }

@@ -342,6 +342,19 @@ try
     builder.Services.AddScoped<IAuditService, AuditService>();
     builder.Services.AddScoped<IEventStateService, EventStateService>();
 
+    // ── Representative Election module + centralised eligibility ──────────────
+    builder.Services.Configure<RepresentativeImportOptions>(builder.Configuration.GetSection(RepresentativeImportOptions.Section));
+    builder.Services.AddScoped<IEligibilityService, EligibilityService>();
+    builder.Services.AddScoped<IEventOpenGate, EventOpenGate>();
+    builder.Services.AddScoped<IRepresentativeRosterService, RepresentativeRosterService>();
+    builder.Services.AddScoped<IVoterLookupService, VoterLookupService>();
+    builder.Services.AddScoped<IRepresentativeImportService, RepresentativeImportService>();
+    builder.Services.AddScoped<IRosterVersionProvider, RosterVersionProvider>();
+    builder.Services.AddScoped<IRepresentativeBallotService, RepresentativeBallotService>();
+    builder.Services.AddScoped<IRepresentativeVoteService, RepresentativeVoteService>();
+    builder.Services.AddScoped<IRepresentativeResultsService, RepresentativeResultsService>();
+    builder.Services.AddSingleton<IRepresentativeLiveUpdates, RepresentativeLiveUpdates>();
+
     // ── Monitoring (API + MySQL + Nginx dashboard) ───────────────────────────
     // Singleton: in-memory counters that need to persist across requests for
     // the process's lifetime (request stats, CPU-sample baseline).

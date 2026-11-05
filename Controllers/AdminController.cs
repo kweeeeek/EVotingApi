@@ -474,71 +474,25 @@ namespace EVoting.Api.Controllers
         }
 
         // ── GET /api/v1/admin/voter-lookup ──────────────────────────────────────
+        /// <summary>
+        /// One page of the voters of an election, paged and filtered by the database (see VoterLookupService).
+        ///   page (1-based, default 1) · pageSize (default 50, at most 200 - a larger value is cut to 200; the answer says which was used)
+        ///   search (name, account code or this election's receipt code) · branchId · hasVoted (true / false)
+        /// Answer: page, pageSize, totalCount, totalPages, items. The older names total / data carry the same numbers and rows.
+        /// page or pageSize below 1 is a 400 VALIDATION error; a page past the end is a normal, empty page.
+        /// </summary>
         [HttpGet("voter-lookup")]
         [RequirePermission(PermissionCodes.EventView)]
         public async Task<IActionResult> VoterLookup(
+            [FromServices] IVoterLookupService lookup,
             [FromQuery] int eventId, [FromQuery] string? search,
             [FromQuery] int? branchId, [FromQuery] bool? hasVoted,
-            [FromQuery] int page = 1, [FromQuery] int pageSize = 100,
+            [FromQuery] int page = 1, [FromQuery] int pageSize = VoterLookupLimits.DefaultPageSize,
             CancellationToken ct = default)
         {
-            pageSize = Math.Clamp(pageSize, 1, 500);
-            var ev = await _db.Events.AsNoTracking()
-                .Include(e => e.EventBranches)
-                .FirstOrDefaultAsync(e => e.EventId == eventId, ct);
-            if (ev == null) return NotFound(new ApiError { Error = $"Event {eventId} not found." });
-
-            var branchIds = ev.EventBranches
-                .Select(eb => eb.BranchId).ToList();
-
-            //ano ang katumbas nito sa sql?
-            // SELECT * FROM VoterLogs WHERE EventId = @eventId
-            var logs = await _db.VoterLogs
-                .AsNoTracking()
-                .Where(v => v.EventId == eventId)
-                .ToListAsync(ct);
-            var logByMember = logs.ToDictionary(l => l.MemberId);
-            // BUG FIX: "voted" must mean the log row says HasVoted. A voter-log row can exist without a completed vote
-            // (HasVoted = false, receipt status "Pending"); the filter used to treat every ROW as a vote, so "voted only" listed
-            // members whose own HasVoted column said false and "not voted" hid them.
-            var votedIds = logs.Where(l => l.HasVoted).Select(l => l.MemberId).ToHashSet();
-
-            // SELECT * FROM Members WHERE IsActive = 1 AND IsEligibleToVote = 1 AND BranchId IN (@branchIds)
-            var memberQ = _db.Members
-                .AsNoTracking()
-                .Include(m => m.Branch)
-                .Where(m => m.IsActive && m.IsEligibleToVote && branchIds
-                .Contains(m.BranchId));
-
-            // Filter by branch if specified
-            if (branchId.HasValue) memberQ = memberQ.
-                    Where(m => m.BranchId == branchId.Value);
-
-            if (!string.IsNullOrWhiteSpace(search)) memberQ = memberQ.Where(m => m.MemberName.Contains(search) || m.AccountCode.Contains(search) || (_db.VoterLogs.Any(v => v.MemberId == m.MemberId && v.ReceiptCode != null && v.ReceiptCode.Contains(search))));
-
-            var members = await memberQ.OrderBy(m => m.MemberName).ThenBy(m => m.MemberId).ToListAsync(ct);   // tie-breaker: stable pages
-            var filtered = hasVoted.HasValue ? (hasVoted.Value ? members.Where(m => votedIds.Contains(m.MemberId)).ToList() : members.Where(m => !votedIds.Contains(m.MemberId)).ToList()) : members;
-
-            int total = filtered.Count;
-            var paged = filtered.Skip((page - 1) * pageSize).Take(pageSize).Select(m =>
-            {
-                var log = logByMember.GetValueOrDefault(m.MemberId);
-                return new
-                {
-                    m.MemberId,
-                    m.AccountCode,
-                    m.MemberName,
-                    Branch = m.Branch?.BranchName ?? "",
-                    m.BranchId,
-                    IsEligible = m.IsEligibleToVote,
-                    HasVoted = log?.HasVoted ?? false,
-                    // VoterLogs.VotedAt is written with DateTime.UtcNow: flag it so clients show it in local time.
-                    VotedAt = TimeConv.AsUtc(log?.VotedAt),
-                    ReceiptCode = log?.ReceiptCode ?? ""
-                };
-            }).ToList();
-
-            return Ok(new { eventId, total, page, pageSize, data = paged });
+            var r = await lookup.QueryAsync(eventId, search, branchId, hasVoted, page, pageSize, ct);
+            if (r.Ok) return Ok(r.Value);
+            return StatusCode(r.StatusCode, new ApiError { Error = r.Error ?? "The request failed.", Code = r.Code, Detail = r.Detail, Fields = r.Fields });
         }
 
 

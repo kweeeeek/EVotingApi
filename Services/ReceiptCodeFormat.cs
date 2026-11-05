@@ -20,6 +20,18 @@ namespace EVoting.Api.Services
             "^EVT(?<event>[0-9]{2,9})-[0-9A-F]{8}-[0-9A-F]{8}\\z",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+        /// <summary>
+        /// A new cryptographically random code in the standard format. The Representative ballot uses this; the General Assembly path keeps
+        /// its own private generator (VoteService.GenerateReceiptCode) so that path is not touched. Same format, same randomness.
+        /// </summary>
+        public static string Generate(int eventId)
+        {
+            Span<byte> bytes = stackalloc byte[8];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+            var hex = Convert.ToHexString(bytes);
+            return $"EVT{eventId:D2}-{hex[..8]}-{hex[8..]}";
+        }
+
         public static bool IsValid(string? code, int eventId)
         {
             if (string.IsNullOrEmpty(code) || code.Length > MaxLength) return false;

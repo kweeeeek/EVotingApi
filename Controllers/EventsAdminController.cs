@@ -27,9 +27,16 @@ namespace EVoting.Api.Controllers
         }
 
         // ── Reads ────────────────────────────────────────────────────────────
-        private IQueryable<EventEntity> BuildQuery(string? search, DateTime? from, DateTime? to)
+        private IQueryable<EventEntity> BuildQuery(string? search, DateTime? from, DateTime? to, string? eventType = null)
         {
             var q = _db.Events.AsNoTracking().Where(e => e.IsActive);
+
+            // Optional filter; an unknown value matches nothing rather than silently returning every event.
+            if (!string.IsNullOrWhiteSpace(eventType))
+            {
+                var wanted = EventTypes.Normalize(eventType);
+                q = wanted == null ? q.Where(e => false) : q.Where(e => e.EventType == wanted);
+            }
 
             if (!string.IsNullOrWhiteSpace(search))
             {
@@ -67,17 +74,18 @@ namespace EVoting.Api.Controllers
             BranchNames = branches == null ? "" : string.Join(", ", branches.Select(b => b.Name)),
             BranchCount = branches?.Count ?? 0,
             CreatedAt = e.CreatedAt,
-            UpdatedAt = e.UpdatedAt
+            UpdatedAt = e.UpdatedAt,
+            EventType = e.EventType
         };
 
         [HttpGet]
         [RequirePermission(PermissionCodes.EventView)]
         public async Task<IActionResult> List(
             [FromQuery] string? search, [FromQuery] DateTime? from, [FromQuery] DateTime? to,
-            [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
+            [FromQuery] int page = 1, [FromQuery] int pageSize = 25, [FromQuery] string? eventType = null, CancellationToken ct = default)
         {
             (page, pageSize) = ClampPaging(page, pageSize);
-            var q = BuildQuery(search, from, to);
+            var q = BuildQuery(search, from, to, eventType);
             var total = await q.CountAsync(ct);
             var events = await q.OrderByDescending(e => e.ScheduleFrom).ThenByDescending(e => e.EventId)
                 .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
@@ -94,7 +102,9 @@ namespace EVoting.Api.Controllers
             if (e == null) return NotFoundError("Event");
             var detail = await LoadDetailAsync(id, ct);
             detail.VoterLogCount = await _db.VoterLogs.AsNoTracking().CountAsync(v => v.EventId == id, ct);
-            detail.VoteCount = await _db.Votes.AsNoTracking().CountAsync(v => v.EventId == id, ct);
+            detail.VoteCount = e.EventType == EventTypes.Representative
+                ? await _db.RepresentativeVotes.AsNoTracking().CountAsync(v => v.EventId == id, ct)
+                : await _db.Votes.AsNoTracking().CountAsync(v => v.EventId == id, ct);
             return Ok(detail);
         }
 
@@ -123,6 +133,7 @@ namespace EVoting.Api.Controllers
                 Venue = req.Venue.Trim(),
                 ScheduleFrom = req.ScheduleFrom,
                 ScheduleTo = req.ScheduleTo,
+                EventType = EventTypes.Normalize(req.EventType)!,   // validated above; blank = GENERAL_ASSEMBLY
                 Status = "Closed",              // the scheduler (or an admin) opens it later
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -134,12 +145,15 @@ namespace EVoting.Api.Controllers
             await _db.SaveChangesAsync(ct);
 
             _db.EventBranches.AddRange(req.BranchIds.Distinct().Select(b => new EventBranchEntity { EventId = ev.EventId, BranchId = b }));
-            _db.EventPositionRules.AddRange(DefaultPositionRules.All.Select(r => new EventPositionRuleEntity
-            {
-                EventId = ev.EventId, Position = r.Position, MinVotes = r.MinVotes, MaxVotes = r.MaxVotes, TotalSeats = r.TotalSeats
-            }));
+            // The four General Assembly positions are defaults for a General Assembly event only. A Representative election defines its own
+            // positions (Position rules editor) before its candidates are imported.
+            if (ev.EventType == EventTypes.GeneralAssembly)
+                _db.EventPositionRules.AddRange(DefaultPositionRules.All.Select(r => new EventPositionRuleEntity
+                {
+                    EventId = ev.EventId, Position = r.Position, MinVotes = r.MinVotes, MaxVotes = r.MaxVotes, TotalSeats = r.TotalSeats
+                }));
             _audit.Stage(AuditActions.Create, AuditEntities.Event, ev.EventId,
-                $"Title='{ev.Title}', Venue='{ev.Venue}', {ev.ScheduleFrom:yyyy-MM-dd HH:mm} → {ev.ScheduleTo:yyyy-MM-dd HH:mm}, Branches=[{string.Join(",", req.BranchIds.Distinct())}].");
+                $"Title='{ev.Title}', Type={ev.EventType}, Venue='{ev.Venue}', {ev.ScheduleFrom:yyyy-MM-dd HH:mm} → {ev.ScheduleTo:yyyy-MM-dd HH:mm}, Branches=[{string.Join(",", req.BranchIds.Distinct())}].");
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
@@ -186,7 +200,7 @@ namespace EVoting.Api.Controllers
 
             // Position rules: keep whatever exists. (The legacy update DELETED all rules and re-seeded defaults,
             // silently discarding any customised ones.) Seed defaults only for events that have none.
-            if (!await _db.EventPositionRules.AnyAsync(r => r.EventId == id, ct))
+            if (ev.EventType == EventTypes.GeneralAssembly && !await _db.EventPositionRules.AnyAsync(r => r.EventId == id, ct))
                 _db.EventPositionRules.AddRange(DefaultPositionRules.All.Select(r => new EventPositionRuleEntity
                 {
                     EventId = id, Position = r.Position, MinVotes = r.MinVotes, MaxVotes = r.MaxVotes, TotalSeats = r.TotalSeats
@@ -242,7 +256,9 @@ namespace EVoting.Api.Controllers
                 var ev = await _db.Events.FirstOrDefaultAsync(e => e.EventId == id && e.IsActive, ct);
                 if (ev == null) return NotFoundError("Event");
 
-                int voteCount = await _db.Votes.CountAsync(v => v.EventId == id, ct);
+                int voteCount = ev.EventType == EventTypes.Representative
+                    ? await _db.RepresentativeVotes.CountAsync(v => v.EventId == id, ct)
+                    : await _db.Votes.CountAsync(v => v.EventId == id, ct);
                 int logCount = await _db.VoterLogs.CountAsync(v => v.EventId == id, ct);
                 if ((voteCount > 0 || logCount > 0) && !purgeVotes)
                     return Fail(StatusCodes.Status409Conflict,
@@ -256,7 +272,8 @@ namespace EVoting.Api.Controllers
                 int votesDeleted = 0, logsDeleted = 0;
                 if (purgeVotes)
                 {
-                    votesDeleted = await _db.Votes.Where(v => v.EventId == id).ExecuteDeleteAsync(ct);
+                    votesDeleted = await _db.Votes.Where(v => v.EventId == id).ExecuteDeleteAsync(ct)
+                                 + await _db.RepresentativeVotes.Where(v => v.EventId == id).ExecuteDeleteAsync(ct);
                     logsDeleted = await _db.VoterLogs.Where(v => v.EventId == id).ExecuteDeleteAsync(ct);
                 }
 
@@ -296,6 +313,14 @@ namespace EVoting.Api.Controllers
                 ScheduleFrom = row.ScheduleFrom, ScheduleTo = row.ScheduleTo, Status = row.Status,
                 BranchNames = row.BranchNames, BranchCount = row.BranchCount,
                 CreatedAt = row.CreatedAt, UpdatedAt = row.UpdatedAt,
+                EventType = e.EventType,
+                RosterLockedAt = e.RosterLockedAt,
+                EligibilityMinShareCapital = e.EligibilityMinShareCapital,
+                EligibilityMinSavingsDeposit = e.EligibilityMinSavingsDeposit,
+                CandidateCount = e.EventType == EventTypes.Representative
+                    ? await _db.RepresentativeEventCandidates.AsNoTracking()
+                        .CountAsync(c => c.EventId == id && c.Status == RepresentativeCandidateStatuses.Approved, ct)
+                    : 0,
                 BranchIds = branches.Select(b => b.BranchId).ToList()
             };
         }
@@ -308,6 +333,21 @@ namespace EVoting.Api.Controllers
             if (string.IsNullOrWhiteSpace(r.Venue)) errors["venue"] = "Venue is required.";
             if (r.ScheduleTo <= r.ScheduleFrom) errors["scheduleTo"] = "The end of the schedule must be after its start.";
             if (r.BranchIds.Count == 0) errors["branchIds"] = "Select at least one branch.";
+            if (existing == null)
+            {
+                if (EventTypes.Normalize(r.EventType) == null)
+                    errors["eventType"] = "Event type must be GENERAL_ASSEMBLY or REPRESENTATIVE.";
+            }
+            else if (!string.IsNullOrWhiteSpace(r.EventType))
+            {
+                var asked = EventTypes.Normalize(r.EventType);
+                if (asked == null) errors["eventType"] = "Event type must be GENERAL_ASSEMBLY or REPRESENTATIVE.";
+                else if (asked != existing.EventType)
+                    return Fail(StatusCodes.Status409Conflict,
+                        "The type of an event cannot be changed after it has been created.",
+                        "EVENT_TYPE_IMMUTABLE", "Create a new event of the other type instead.",
+                        new() { ["eventType"] = "Cannot be changed." });
+            }
             if (errors.Count > 0) return Invalid(errors);
 
             var ids = r.BranchIds.Distinct().ToList();
@@ -327,6 +367,7 @@ namespace EVoting.Api.Controllers
                 var clash = await _db.Events.AsNoTracking()
                     .Where(e => e.IsActive && (exceptId == null || e.EventId != exceptId)
                              && e.ScheduleFrom < r.ScheduleTo && e.ScheduleTo > r.ScheduleFrom)
+                    .OrderBy(e => e.ScheduleFrom).ThenBy(e => e.EventId)
                     .Select(e => e.Title).Take(3).ToListAsync(ct);
                 if (clash.Count > 0)
                     return Fail(StatusCodes.Status409Conflict,

@@ -168,6 +168,9 @@ namespace EVoting.Api.Models.Responses
         public DateTime ScheduleFrom { get; set; }
         public DateTime ScheduleTo { get; set; }
         public string Status { get; set; } = "";
+
+        /// <summary>ADDITIVE. GENERAL_ASSEMBLY (default, also for clients that predate it) or REPRESENTATIVE.</summary>
+        public string EventType { get; set; } = "GENERAL_ASSEMBLY";
     }
 
     // ── Votes ─────────────────────────────────────────────────────────────────
@@ -236,6 +239,9 @@ namespace EVoting.Api.Models.Responses
         public string Status { get; set; } = "";
         public bool IsActive { get; set; }
         public List<BranchResponse> Branches { get; set; } = new();
+
+        /// <summary>ADDITIVE. GENERAL_ASSEMBLY (default) or REPRESENTATIVE: tells a kiosk which ballot to show.</summary>
+        public string EventType { get; set; } = "GENERAL_ASSEMBLY";
     }
 
     // ── Candidates ────────────────────────────────────────────────────────────

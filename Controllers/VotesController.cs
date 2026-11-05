@@ -87,6 +87,10 @@ namespace EVoting.Api.Controllers
                 {
                     return Conflict(new ApiError { Error = ex.Message });
                 }
+                catch (WrongEventTypeException ex)
+                {
+                    return Conflict(new ApiError { Error = ex.Message, Code = RepCodes.WrongEventType });
+                }
 
                 // A replay changed nothing in the database: no dashboard push, no MemberVoted broadcast.
                 if (!outcome.WasReplay)
@@ -117,6 +121,10 @@ namespace EVoting.Api.Controllers
             catch (InvalidOperationException ex) when (ex.Message.Contains("already voted"))
             {
                 return Conflict(new ApiError { Error = ex.Message });
+            }
+            catch (WrongEventTypeException ex)
+            {
+                return Conflict(new ApiError { Error = ex.Message, Code = RepCodes.WrongEventType });
             }
 
             
@@ -187,6 +195,13 @@ namespace EVoting.Api.Controllers
                     "EventId={EventId} Receipt={Receipt} — {Reason}",
                     kioskId, req.MemberId, req.EventId, req.ReceiptCode, ex.Message);
                 return Conflict(new ApiError { Error = ex.Message });
+            }
+            catch (WrongEventTypeException ex)
+            {
+                _logger.LogWarning(
+                    "Offline vote sync rejected (wrong event type): KioskId={KioskId} EventId={EventId} Receipt={Receipt}",
+                    kioskId, req.EventId, req.ReceiptCode);
+                return UnprocessableEntity(new ApiError { Error = ex.Message, Code = RepCodes.WrongEventType });
             }
             catch (InvalidOperationException ex)
             {

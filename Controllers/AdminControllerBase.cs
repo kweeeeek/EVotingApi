@@ -38,6 +38,12 @@ namespace EVoting.Api.Controllers
                  $"This {what} was changed by someone else after you opened it.",
                  "CONCURRENCY", "Reload the record and re-apply your changes.");
 
+        /// <summary>Maps a service outcome to the standard response: the value on success, the standard ApiError body otherwise.</summary>
+        protected IActionResult FromResult<T>(Services.ServiceResult<T> r) =>
+            r.Ok
+                ? (r.StatusCode == StatusCodes.Status200OK ? Ok(r.Value) : StatusCode(r.StatusCode, r.Value))
+                : Fail(r.StatusCode, r.Error ?? "The request failed.", r.Code, r.Detail, r.Fields);
+
         protected ObjectResult Duplicate(string message, string? field = null) =>
             Fail(StatusCodes.Status409Conflict, message, "DUPLICATE", null,
                  field == null ? null : new() { [field] = message });
