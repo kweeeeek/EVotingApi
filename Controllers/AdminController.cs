@@ -479,7 +479,7 @@ namespace EVoting.Api.Controllers
         // ── GET /api/v1/admin/voter-lookup ──────────────────────────────────────
         /// <summary>
         /// One page of the voters of an election, paged and filtered by the database (see VoterLookupService).
-        ///   page (1-based, default 1) · pageSize (default 50, at most 200 - a larger value is cut to 200; the answer says which was used)
+        ///   page (1-based, default 1) · pageSize (default 50, at most 500 - a larger value is cut to 500; the answer says which was used)
         ///   search (name, account code or this election's receipt code) · branchId · hasVoted (true / false)
         /// Answer: page, pageSize, totalCount, totalPages, items. The older names total / data carry the same numbers and rows.
         /// page or pageSize below 1 is a 400 VALIDATION error; a page past the end is a normal, empty page.
