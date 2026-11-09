@@ -160,7 +160,8 @@ namespace EVoting.Api.Services
     // ── Candidate code / text normalisation ──────────────────────────────────────────────────────────────────
     public static class CandidateCodeRules
     {
-        private static readonly Regex Pattern = new(@"^[A-Z0-9][A-Z0-9._/\-]*$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        // \z (the very end of the text), not $: in a .NET regular expression '$' also matches just before a final line break.
+        private static readonly Regex Pattern = new(@"^[A-Z0-9][A-Z0-9._/\-]*\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         public const string Requirement =
             "Candidate code must be 1–30 characters: letters, digits and . _ / - (starting with a letter or digit).";
@@ -175,7 +176,7 @@ namespace EVoting.Api.Services
     public static class RepText
     {
         private static readonly Regex Spaces = new(@"[ \t ]+", RegexOptions.CultureInvariant | RegexOptions.Compiled);
-        private static readonly Regex Phone = new(@"^[0-9+\-()./ ]{3,20}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        private static readonly Regex Phone = new(@"^[0-9+\-()./ ]{3,20}\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         /// <summary>Single-line text: NFC, tabs/line-breaks → space, runs of spaces collapsed, trimmed. Empty → null.</summary>
         public static string? OneLine(string? raw)
@@ -508,15 +509,31 @@ namespace EVoting.Api.Services
         /// </summary>
         public static string Compute(int eventId, string eventType, IEnumerable<RosterRuleFact> rules, IEnumerable<RosterCandidateFact> candidates)
         {
+            // Every piece of text is written as "<length>:<text>|", so no character inside a name or a position (a '|', a line break) can be
+            // mistaken for the end of a field: two different rosters can never produce the same string. Numbers are digits only.
+            // Positions are compared the way the ballot compares them (trimmed, upper case), also for the sort order.
+            static StringBuilder Text(StringBuilder sb, string value) => sb.Append(value.Length).Append(':').Append(value).Append('|');
+            static string Key(string position) => position.Trim().ToUpperInvariant();
+
             var sb = new StringBuilder();
-            sb.Append("v1|").Append(eventId).Append('|').Append(eventType).Append('\n');
-            foreach (var r in rules.OrderBy(r => r.Position, StringComparer.OrdinalIgnoreCase))
-                sb.Append("R|").Append(r.Position.Trim().ToUpperInvariant()).Append('|').Append(r.MinVotes).Append('|').Append(r.MaxVotes)
-                  .Append('|').Append(r.TotalSeats).Append('|').Append(r.MaxCandidates?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('\n');
+            sb.Append("v2|").Append(eventId).Append('|');
+            Text(sb, eventType).Append('\n');
+            foreach (var r in rules.OrderBy(r => Key(r.Position), StringComparer.Ordinal))
+            {
+                Text(sb.Append("R|"), Key(r.Position));
+                sb.Append(r.MinVotes).Append('|').Append(r.MaxVotes).Append('|').Append(r.TotalSeats).Append('|')
+                  .Append(r.MaxCandidates?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('\n');
+            }
             foreach (var c in candidates.OrderBy(c => c.Id))
-                sb.Append("C|").Append(c.Id).Append('|').Append(c.ProfileId).Append('|').Append(c.Code).Append('|').Append(c.Name)
-                  .Append('|').Append(c.Position.Trim().ToUpperInvariant()).Append('|').Append(c.BallotNumber?.ToString(CultureInfo.InvariantCulture) ?? "-")
-                  .Append('|').Append(c.Status).Append('|').Append(c.PhotoVersion).Append('\n');
+            {
+                sb.Append("C|").Append(c.Id).Append('|').Append(c.ProfileId).Append('|');
+                Text(sb, c.Code);
+                Text(sb, c.Name);
+                Text(sb, Key(c.Position));
+                sb.Append(c.BallotNumber?.ToString(CultureInfo.InvariantCulture) ?? "-").Append('|');
+                Text(sb, c.Status);
+                sb.Append(c.PhotoVersion).Append('\n');
+            }
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).ToLowerInvariant();
         }
     }
