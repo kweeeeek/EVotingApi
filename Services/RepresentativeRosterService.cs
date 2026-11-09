@@ -296,6 +296,7 @@ namespace EVoting.Api.Services
                     // Deactivating a person who is still on a live ballot would silently change that ballot, so it is refused.
                     var live = await _db.RepresentativeEventCandidates.AsNoTracking()
                         .Where(c => c.RepresentativeCandidateProfileId == id && (c.Event!.Status == "Opened" || c.Event.RosterLockedAt == null))
+                        .OrderBy(c => c.EventId)          // the same election is named on every call when there are several
                         .Select(c => new { c.Event!.Title, c.Event.Status }).FirstOrDefaultAsync(ct);
                     if (live != null)
                         return ServiceResult<RepProfileDetail>.Failure(StatusCodes.Status409Conflict,
@@ -384,6 +385,7 @@ namespace EVoting.Api.Services
         {
             var open = await _db.RepresentativeEventCandidates.AsNoTracking()
                 .Where(c => c.RepresentativeCandidateProfileId == p.RepresentativeCandidateProfileId && c.Event!.Status == "Opened")
+                .OrderBy(c => c.EventId)
                 .Select(c => c.Event!.Title).FirstOrDefaultAsync(ct);
             return open == null ? null
                 : ServiceResult<object>.Failure(StatusCodes.Status409Conflict,
