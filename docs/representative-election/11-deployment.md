@@ -68,7 +68,8 @@ After an application-only rollback to the old API, expect one visible difference
 
 None of the `RepresentativeImport` keys is in the shipped `appsettings.json`; the defaults above apply unless you add them.
 The eligibility thresholds are cached for five minutes in the distributed cache and evicted on save. With **more than one API instance** and no shared cache (no Redis), each instance has its own cache and may use the previous
-thresholds for up to five minutes after a save.
+thresholds for up to five minutes after a save (measured: `06-eligibility-policy.md` §6). With Redis, the instances agree at once.
+If Redis is configured but **unreachable**, cached reads and saves wait for the Redis client's connection timeout (11 to 12 seconds in the test) before they fall back to the database: the screens become slow, not broken. Monitor Redis.
 
 **Permissions.** The migration adds `SETTINGS_ELIGIBILITY_VIEW` and `SETTINGS_ELIGIBILITY_EDIT` and grants both to `RoleId 1` only. Any other role that should see or change the thresholds must be granted them by an administrator
 (`07-permissions.md` §5). The Representative screens use permission codes that already exist (`07-permissions.md` §2).
