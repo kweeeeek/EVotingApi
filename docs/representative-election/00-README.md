@@ -5,7 +5,7 @@ some of the planned file names, so those names are fixed.
 
 | File | Subject | Status |
 |---|---|---|
-| `01-audit-and-design.md` | Source/database audit (Part 2.4), architecture report, ERD, API contract design, WPF plan | **planned** (referenced from `RepresentativeEntities.cs`) |
+| `01-audit-and-design.md` | Source/database audit (Part 2.4), architecture report, ERD, design, risks (referenced from `RepresentativeEntities.cs`) | written (2026-11-09) |
 | `02-import-and-column-mapping.md` | Excel template column → staging field → profile/assignment field (Part 4); the import flow, row rules, conflicts, commit, limits | written (2026-11-09) |
 | `03-migration-review.md` | The two EF migrations, SQL scripts, delete behaviour, risks, executed evidence | written |
 | `04-rollback.md` | Rollback and recovery (referenced from the migration's rollback guard) | written |
@@ -16,7 +16,7 @@ some of the planned file names, so those names are fixed.
 | `08-kiosk-offline.md` | Kiosk and offline contract; what the unmodified Kiosk does; work list for the Kiosk repository | written |
 | `09-testing.md` | Part 15 test mapping: executed vs not executed, totals | **planned** (after the final full run) |
 | `10-ga-regression-report.md` | General Assembly differential regression (original build vs new build, and original build on the new schema) | written (2026-11-09) |
-| `11-deployment.md` | Deployment order, configuration, post-deploy steps | **planned** |
+| `11-deployment.md` | Deployment order, configuration, post-deploy checks, schedule review | written (2026-11-09) |
 | `12-change-ledger.md` | Final change ledger incl. rollback instructions (Part 16/17) | **planned** |
 | `STATUS.md` | Save point: what exists, what was checked, what remains, limits of the evidence | written (2026-11-05) |
 

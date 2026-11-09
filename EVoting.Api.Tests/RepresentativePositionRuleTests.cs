@@ -308,6 +308,27 @@ namespace EVoting.Api.Tests
             Assert.Contains("17 ballot(s)", l.Reason);
         }
 
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(int.MaxValue)]
+        public void A_single_ballot_is_enough_to_freeze_the_rules(int ballots)
+        {
+            // the boundary that matters most: the first ballot, not the second, ends editing (found by the mutation check of these tests)
+            var l = EventLockPolicy.ForRulesAndRoster("Closed", EventTypes.Representative, null, ballots);
+            Assert.True(l.Locked);
+            Assert.Equal(RepCodes.HasBallots, l.Code);
+            Assert.Contains($"{ballots} ballot(s)", l.Reason);
+        }
+
+        [Fact]
+        public void No_ballot_at_all_does_not_freeze_the_rules()
+        {
+            var l = EventLockPolicy.ForRulesAndRoster("Closed", EventTypes.GeneralAssembly, null, 0);
+            Assert.False(l.Locked);
+            Assert.Null(l.Code);
+        }
+
         [Fact]
         public void A_representative_roster_stays_locked_after_the_first_opening_until_an_administrator_unlocks_it()
         {
