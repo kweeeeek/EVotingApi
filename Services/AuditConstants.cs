@@ -81,10 +81,13 @@ namespace EVoting.Api.Services
                 Action = Clip(action, 50) ?? "",
                 EntityType = Clip(entityType, 100) ?? "",
                 EntityId = entityId,
-                Details = Clip(details, 2000),
+                // AuditLogs.Details and AuditLogs.IpAddress are NOT NULL in the database. A row written by a background service (the
+                // election scheduler) has no HTTP request and therefore no IP address; NULL made SaveChanges fail, which also lost
+                // the event status change saved in the same call. An empty string means "no address".
+                Details = Clip(details, 2000) ?? "",
                 UserId = userId,
                 Username = Clip(string.IsNullOrWhiteSpace(username) ? SystemUser : username, 50),
-                IpAddress = Clip(ip, 45),
+                IpAddress = Clip(ip, 45) ?? "",
                 OccurredAtUtc = utcNow ?? DateTime.UtcNow
             };
 
