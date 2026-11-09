@@ -453,7 +453,10 @@ namespace EVoting.Api.Controllers
             var logs = await _db.VoterLogs
                 .AsNoTracking()
                 .Where(v => v.EventId == eventId && v.HasVoted)
-                .OrderBy(v => v.VotedAt)
+                // VotedAt has one-second precision, so several voters share a value; without the tie-breaker the database returns them
+                // in whatever order its chosen index delivers (it changed when IX_VoterLogs_Event_Voted_Member was added).
+                // VoterLogId = the order the rows came in before, now guaranteed.
+                .OrderBy(v => v.VotedAt).ThenBy(v => v.VoterLogId)
                 .Select(v => new
                 {
                     v.VoterLogId,

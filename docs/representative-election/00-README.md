@@ -15,7 +15,7 @@ some of the planned file names, so those names are fixed.
 | `07-permissions.md` | Permission mapping and navigation gating | **planned** |
 | `08-kiosk-offline.md` | Kiosk and offline contract; what the unmodified Kiosk does; work list for the Kiosk repository | written |
 | `09-testing.md` | Part 15 test mapping: executed vs not executed, totals | **planned** (after the final full run) |
-| `10-ga-regression-report.md` | General Assembly differential regression (original build vs new build) | **planned** |
+| `10-ga-regression-report.md` | General Assembly differential regression (original build vs new build, and original build on the new schema) | written (2026-11-09) |
 | `11-deployment.md` | Deployment order, configuration, post-deploy steps | **planned** |
 | `12-change-ledger.md` | Final change ledger incl. rollback instructions (Part 16/17) | **planned** |
 | `STATUS.md` | Save point: what exists, what was checked, what remains, limits of the evidence | written (2026-11-05) |
