@@ -6,7 +6,7 @@ some of the planned file names, so those names are fixed.
 | File | Subject | Status |
 |---|---|---|
 | `01-audit-and-design.md` | Source/database audit (Part 2.4), architecture report, ERD, API contract design, WPF plan | **planned** (referenced from `RepresentativeEntities.cs`) |
-| `02-import-and-column-mapping.md` | Excel template column → staging field → profile/assignment field (Part 4) | **planned** |
+| `02-import-and-column-mapping.md` | Excel template column → staging field → profile/assignment field (Part 4); the import flow, row rules, conflicts, commit, limits | written (2026-11-09) |
 | `03-migration-review.md` | The two EF migrations, SQL scripts, delete behaviour, risks, executed evidence | written |
 | `04-rollback.md` | Rollback and recovery (referenced from the migration's rollback guard) | written |
 | `05-api-contracts.md` | Endpoint catalogue with permissions and error codes | written (2026-11-09) |
