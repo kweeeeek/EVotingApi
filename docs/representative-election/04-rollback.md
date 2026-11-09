@@ -67,9 +67,9 @@ The schema is additive and the General Assembly paths are unchanged, so the prev
 * Before you redeploy the old API: **close or disable every Representative event.** The old API has no concept of `EventType`; it would present a Representative event as an
   ordinary one with no candidacies and could open it.
 * The old API keeps working with the unique index `UQ_EventPositionRules_EventId_Position` and the new columns (it ignores them; new columns have defaults).
-* Measured difference of "old API + new schema" (`10-ga-regression-report.md` §6): two lists come back in another order because the **old** code has no complete `ORDER BY`.
-  The kiosk position-rules endpoint lists the positions alphabetically instead of in creation order (so the order of positions on a General Assembly ballot can change), and the audit
-  list orders voters who voted in the same second differently. The new build fixes both with an explicit ordering. Everything else in the 100 compared calls was identical.
+* Measured difference of "old API + new schema" (`10-ga-regression-report.md` §6): one list comes back in another order because the **old** code has no complete `ORDER BY`.
+  The kiosk position-rules endpoint lists the positions alphabetically instead of in creation order, so the order of positions on a General Assembly ballot can change. The new build
+  fixes this with an explicit ordering. Everything else in the 100 compared calls was identical.
 
 ## 5. A failed or interrupted migration
 
