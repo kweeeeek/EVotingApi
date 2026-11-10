@@ -425,7 +425,8 @@ try
     // read once it's final (see RequestMetricsMiddleware's own doc comment).
     app.UseMiddleware<RequestMetricsMiddleware>();
     app.UseMiddleware<ExceptionHandlerMiddleware>();
-    app.UseSerilogRequestLogging();
+    // A caller that closes the connection (the Admin's search box cancels the previous request) is not a server error: see RequestLogLevel.
+    app.UseSerilogRequestLogging(options => options.GetLevel = RequestLogLevel.For);
 
     app.UseForwardedHeaders(new ForwardedHeadersOptions
     {
