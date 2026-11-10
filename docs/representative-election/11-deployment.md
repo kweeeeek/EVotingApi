@@ -73,6 +73,8 @@ Reproduced on a scratch copy of the supplied dump (new API, scripts not applied)
 If `005` stops with `Duplicate entry`, an election lists the same position twice: the script changed nothing, so the symptom above remains until you delete the extra row and run it again (`03-migration-review.md` §5).
 If the scripts ran without error and the symptom remains, the API is connected to a different database than the one you updated.
 
+**A partly updated database.** A database can hold the 7 new tables and still lack every change to the existing ones. This is what remains when a schema file that only *creates* tables is run over an existing database with errors skipped: a `CREATE TABLE` can add a table that is missing but cannot add a column or an index to a table that exists, and it inserts no permission or migration-history rows. The symptoms above are the same, `SHOW COLUMNS FROM Events LIKE 'EventType';` returns no row, and the fix is the same: `005` and then `006` skip the tables and indexes that already exist and add what is missing. Reproduced on a scratch copy of such a database: both scripts ran without error, every verify row said `PASS`, no existing row changed, and the resulting structure was identical to that of a database updated by the scripts from the start. A schema file meant only for building an empty database should stop when the target already has tables (the structure-only file that accompanied this work does so, also when the SQL tool is set to continue after errors).
+
 ## 4. Configuration
 
 | Key | Default | Meaning |
