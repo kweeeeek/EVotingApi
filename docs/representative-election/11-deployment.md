@@ -55,6 +55,24 @@ Instead of the scripts you may use EF (`dotnet ef database update`); the result 
 `04-rollback.md` decides: application-only rollback is always possible (schema is additive); a schema rollback is possible **only while no Representative ballot exists**, and both rollback paths refuse otherwise.
 After an application-only rollback to the old API, expect one visible difference on General Assembly kiosks: the positions of the ballot may be listed alphabetically instead of in creation order (`10-ga-regression-report.md` §6).
 
+### 3.4 The new API on a database that has not been updated
+
+The order of §3.2 matters in one direction only: the **old** API runs on the new schema, but the **new** API does not run on the old schema. The new API does not update the schema by itself and does not check it when it starts. It starts normally, and then every request that reads an election fails.
+Reproduced on a scratch copy of the supplied dump (new API, scripts not applied):
+
+| What you see | Why |
+|---|---|
+| Admin › Events, the three Representative screens, Election Results and Voter Lookup (the "current election" read) show a red banner: *"Could not load …: An unexpected error occurred. Please try again or contact support."* The API answers `500` with exactly that text. | These requests read `Events`, which now has four more columns. |
+| Members, Branches and other screens that do not read elections still work. | They do not touch `Events`. |
+| *Settings › Member Eligibility* stays greyed in the sidebar. | The two permission rows are inserted by the update. |
+| The API log has `MySqlConnector.MySqlException: Unknown column 'e.EligibilityMinSavingsDeposit' in 'field list'` (or `EventType`, `RosterLockedAt`, `EligibilityMinShareCapital`), once per request and once every ten seconds from the scheduler. | The query names a column the database does not have yet. |
+| `GET /health/ready` still answers *Healthy*. | It checks that the database can be reached, not that the schema is current. Do not rely on it for this. |
+
+**Check:** `SHOW COLUMNS FROM Events LIKE 'EventType';` returns no row, or `005_…_verify.sql` shows a `FAIL`/error row.
+**Fix:** apply `005_…sql`, then `006_…sql` to the database **that the API's connection string names** (rehearse on a copy first, §3.1; take the backup, §2.2), and read the verify rows. The API does not need a restart: in the reproduction the same API process answered normally as soon as the scripts had run. Then sign out of the Admin and sign in again so the sidebar picks up the new permission.
+If `005` stops with `Duplicate entry`, an election lists the same position twice: the script changed nothing, so the symptom above remains until you delete the extra row and run it again (`03-migration-review.md` §5).
+If the scripts ran without error and the symptom remains, the API is connected to a different database than the one you updated.
+
 ## 4. Configuration
 
 | Key | Default | Meaning |
@@ -81,7 +99,7 @@ On the rehearsal copy first, then on production (read-only unless stated):
 | # | Check | Expected |
 |---|---|---|
 | 1 | `005_…_verify.sql`, `006_…_verify.sql` | every row `PASS` |
-| 2 | `GET /health/ready` | healthy |
+| 2 | `GET /health/ready` | healthy (this proves only that the database can be reached; row 1 proves the schema, §3.4) |
 | 3 | Admin › Events | existing elections are listed, each with type *General Assembly* |
 | 4 | Open an existing election in the editor | the same four rules as before, now editable; nothing else changed |
 | 5 | Admin › Voter Lookup (an existing election) | pages of 50; the total and page count are shown; paging and the voted filter work. The toolbar shows the total only: the voted / pending split of the whole list is on the Turnout tab |
