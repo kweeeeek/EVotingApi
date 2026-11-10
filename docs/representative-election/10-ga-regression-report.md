@@ -2,7 +2,7 @@
 
 Part 15 requires proof that the existing General Assembly (GA) behaviour still works. This report compares the **original API build** with the **new build**
 on the twelve required GA tests, and also runs the original build against the **new database schema** (the "roll back the application only" case of `04-rollback.md`).
-Everything ran on scratch copies of the supplied database dump (MySQL 8.0.46); nothing was run against a production database. Run date: 2026-11-09 (final runs, after the last code change to the API).
+Everything ran on scratch copies of the supplied database dump (MySQL 8.0.46); nothing was run against a production database. Run date: 2026-11-09 (final runs, after the last code change to the API). The three runs were repeated on 2026-11-10 as part of the final regression (`09-testing.md` §5) with identical counts: 81 checks in each configuration, 86 identical / 14 additive / 0 different between the original and the new build, and 99 identical / 0 additive / 1 different for the original build on the new schema.
 
 ## 1. Result in one paragraph
 
