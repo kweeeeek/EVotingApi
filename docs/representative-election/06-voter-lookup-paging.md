@@ -36,7 +36,7 @@ Three short statements, none of which reads the whole member table:
 Two details keep it fast on a very large membership:
 
 * The `IsActive`, `IsEligibleToVote` and `HasVoted` conditions are sent as parameters (`col = @p`). EF Core would otherwise write a bare boolean (`WHERE col`), which MySQL reads as `col <> 0` — a range, which can neither walk an index in name order nor use a `(EventId, HasVoted, …)` index.
-* A receipt-code search first looks up this election's matching receipts, and only when the typed text could be part of a receipt code at all (letters E, V, T, A–F, digits and `-`). A name such as "Santos" never touches the receipts. When more than 200 voters match through their receipt, the test runs per member instead of from an id list (correct, just slower).
+* A receipt-code search first looks up this election's matching receipts, and only when the typed text could be part of a receipt code at all (letters E, V, T, A–F, digits and `-`). A typical surname (it contains letters outside that set) never touches the receipts. When more than 200 voters match through their receipt, the test runs per member instead of from an id list (correct, just slower).
 
 ## 3. Indexes (migration `20261104150000_AddVoterLookupIndexes`, script `deploy/sql/006_voter_lookup_indexes.sql`)
 
@@ -63,10 +63,10 @@ The dump's election 31 (all branches, 67 515 active members; the dump holds only
 | page 1 (50 rows) | 414 ms | 64 ms |
 | page 675 (50 rows, the middle of the list) | 397 ms | 162 ms |
 | page 1 (500 rows) | 417 ms | 70 ms |
-| search `valdez`, page 1 (1 040 matches) | 133 ms | 96 ms |
+| search a common surname, page 1 (1 040 matches) | 133 ms | 96 ms |
 | voted only, page 1 (3 voters) | 364 ms | 9 ms |
 
-The original build loads every member of the election into memory for each request (its search is the one step done in the database, which is why the `valdez` request, with 1 040 matches to load, is the fast one). Its cost therefore grows with the membership **and** with the memory of the request; with a larger membership or a busy election (one voter-log row per voter) it would be slower than shown. That was not measured.
+The original build loads every member of the election into memory for each request (its search is the one step done in the database, which is why the surname request, with 1 040 matches to load, is the fast one). Its cost therefore grows with the membership **and** with the memory of the request; with a larger membership or a busy election (one voter-log row per voter) it would be slower than shown. That was not measured.
 
 ### 4.2 The new build at the production size (measured 2026-11-09)
 
@@ -80,8 +80,8 @@ Median of 5 calls with the minimum and maximum beside it; scratch copy of the du
 | last page (page 1 351) | 67 515 | 15 | **172** | 151 – 174 |
 | page 1 (100 rows) | 67 515 | 100 | **69** | 67 – 77 |
 | branch 502, page 1 | 12 957 | 50 | **13** | 12 – 21 |
-| search `valdez`, page 1 | 1 040 | 50 | **107** | 100 – 117 |
-| search `valdez`, page 20 | 1 040 | 50 | **181** | 161 – 199 |
+| search a common surname, page 1 | 1 040 | 50 | **107** | 100 – 117 |
+| search a common surname, page 20 | 1 040 | 50 | **181** | 161 – 199 |
 | search one account code | 2 | 2 | **243** | 202 – 259 |
 | search with no match | 0 | 0 | **91** | 86 – 99 |
 | search a text that every voter's receipt contains | 22 505 | 50 | **236** | 217 – 245 |
@@ -92,7 +92,7 @@ Median of 5 calls with the minimum and maximum beside it; scratch copy of the du
 | branch 502 + voted only + search | 109 | 50 | **43** | 39 – 55 |
 | two-branch election: page 1 (50 rows) | 1 700 | 50 | **9** | 8 – 12 |
 | two-branch election: last page | 1 700 | 50 | **8** | 8 – 8 |
-| two-branch election: search `valdez` | 81 | 50 | **86** | 83 – 88 |
+| two-branch election: search the same surname | 81 | 50 | **86** | 83 – 88 |
 
 The test script asserts that every scenario answers within 500 ms at this size (check `VS-05`); it passed, the slowest median being 243 ms. The plan of every COUNT and page-id statement uses an index (`VS-04`): no statement scans the whole member table.
 At this size MySQL mostly chose indexes that already existed (§3), so the figures above owe more to the three-statement shape (§2) than to the new indexes.
@@ -109,8 +109,8 @@ This is a stress figure, **not** the production size; no such membership exists.
 | last page (page 19 443) | 972 130 | 30 | **790** | 778 – 928 |
 | page 1 (100 rows) | 972 130 | 100 | **179** | 167 – 217 |
 | branch 502, page 1 | 29 441 | 50 | **13** | 12 – 25 |
-| search `Santos`, page 1 | 18 704 | 50 | **1 011** | 912 – 1 221 |
-| search `Santos`, page 20 | 18 704 | 50 | **2 253** | 2 247 – 2 929 |
+| search a very common surname, page 1 | 18 704 | 50 | **1 011** | 912 – 1 221 |
+| search a very common surname, page 20 | 18 704 | 50 | **2 253** | 2 247 – 2 929 |
 | search one account code | 1 | 1 | **2 842** | 2 783 – 3 069 |
 | search with no match | 0 | 0 | **430** | 378 – 469 |
 | search a text that every voter's receipt contains | 324 037 | 50 | **2 992** | 2 912 – 3 109 |
@@ -121,10 +121,10 @@ This is a stress figure, **not** the production size; no such membership exists.
 | branch 502 + voted only + search | 22 | 22 | **148** | 142 – 162 |
 | two-branch election: page 1 (50 rows) | 34 008 | 50 | **31** | 29 – 33 |
 | two-branch election: last page | 34 008 | 8 | **42** | 36 – 61 |
-| two-branch election: search `Cruz` | 6 | 6 | **2 252** | 2 164 – 2 286 |
+| two-branch election: search a surname | 6 | 6 | **2 252** | 2 164 – 2 286 |
 
 The test script asserts that page navigation (no search, no voted filter) stays within 1 500 ms and that every scenario, searches and voted filters included, stays within 5 000 ms (`VS-03a`, `VS-03b`); both passed.
-The same scenarios were also run on 2026-11-04. The two runs agree to within 14 percent in every row above 100 ms (the largest differences: a receipt search that matches every voter, 2 646 ms then and 2 992 ms now; `Cruz`, 2 025 ms then and 2 252 ms now) and to within 8 ms in the rows below 50 ms.
+The same scenarios were also run on 2026-11-04. The two runs agree to within 14 percent in every row above 100 ms (the largest differences: a receipt search that matches every voter, 2 646 ms then and 2 992 ms now; the two-branch surname search, 2 025 ms then and 2 252 ms now) and to within 8 ms in the rows below 50 ms.
 Both runs shared the 2-core machine with the other test processes, so differences of this size say little about the code.
 
 What is slow at this size, and why: a name search is a substring search (`LIKE '%text%'`), which no ordinary index can walk in name order, and the account-code search works the same way. The voted / not-voted filters count and page across hundreds of thousands of voter-log rows,

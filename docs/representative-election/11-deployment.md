@@ -84,7 +84,7 @@ On the rehearsal copy first, then on production (read-only unless stated):
 | 2 | `GET /health/ready` | healthy |
 | 3 | Admin › Events | existing elections are listed, each with type *General Assembly* |
 | 4 | Open an existing election in the editor | the same four rules as before, now editable; nothing else changed |
-| 5 | Admin › Voter Lookup (an existing election) | pages of 50; the total and page count are shown; paging and the voted filter work |
+| 5 | Admin › Voter Lookup (an existing election) | pages of 50; the total and page count are shown; paging and the voted filter work. The toolbar shows the total only: the voted / pending split of the whole list is on the Turnout tab |
 | 6 | Admin › Settings › Member Eligibility | 3000 / 4000, source *configuration* |
 | 7 | A Kiosk (or the Kiosk contract): `events/current`, `events/{id}/candidates`, `events/{id}/position-rules` for a General Assembly election | same answers as before, plus the `eventType` field; positions in the usual order |
 | 8 | Registration Station: member search | unchanged |
