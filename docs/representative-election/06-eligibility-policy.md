@@ -79,9 +79,9 @@ members evaluated and flipped. Refused attempts do not change data. (EL-13…13d
 ## 6. Verified (executed) and not verified
 
 Executed over HTTP against a real MySQL copy (`t03_eligibility.py`, ids above in this document; totals in `09-testing.md`), and through the real WPF screen logic against the real API
-(`Member eligibility` suite: ELA-01…11 and ELV-01…08, 19 passed; seven deliberate defects in the screen were each caught by the intended test).
+(`Member eligibility` suite: ELA-01…11 and ELV-01…10, 21 passed; the deliberate-defect check of the screen is reported in `09-testing.md` §6.7).
 
-### Against a real Redis (`t11_redis_cache.py`, 16 checks passed, 2026-11-09)
+### Against a real Redis (`t11_redis_cache.py`, 16 checks passed, 2026-11-09 and again in the final regression of 2026-11-10)
 
 The same build was started **twice** against one database and one real Redis 7.0 server (the operating-system package), and the thresholds were read through the cached path (the member-editor preview;
 the settings screen itself reads the database).
@@ -92,7 +92,7 @@ the settings screen itself reads the database).
 | Instance B has the old thresholds cached; A saves new ones; B's very next preview already decides with the new ones (and the same in the other direction) | passed |
 | Redis stopped: a cached read still answers from the database and logs "Eligibility cache read failed; reading the database."; a save still succeeds and logs "Could not evict …"; the other instance reads the saved values from the database | passed |
 | Redis started again: both instances agree, and a save is again visible on the other instance at once | passed |
-| **Negative control** (`t11b_no_redis_control.py`, 3 checks): the same two instances **without** Redis (each with its own in-process cache) | B keeps deciding with the **old** thresholds after A's save — the stale window that a shared cache removes; so the test above can fail |
+| **Negative control** (`t11b_no_redis_control.py`, 6 checks, all passed): the same two instances **without** Redis (each with its own in-process cache) | B keeps deciding with the **old** thresholds after A's save — the stale window that a shared cache removes; so the test above can fail |
 
 Consequences for operation: with more than one API instance, use the shared cache (Redis) or accept up to five minutes of difference between instances after a save (`11-deployment.md` §4).
 With Redis **configured but unreachable**, a cached read and a save each took 11 to 12 seconds in this test (the Redis client's connection timeout) before falling back to the database. The settings and member screens are therefore slow, not broken,
