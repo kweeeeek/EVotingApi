@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
-using Isopoh.Cryptography.Argon2;
-using Isopoh.Cryptography.SecureArray;
+using System.Globalization;
+using Konscious.Security.Cryptography;
 
 namespace EVoting.Api.Services
 {
@@ -55,42 +55,43 @@ namespace EVoting.Api.Services
             _pepper = pepper;
         }
 
-        // WHY NOT Argon2.Hash(...) / Argon2.Verify(...)?
-        // Those one-line helpers of Isopoh.Cryptography.Argon2 1.0.x create an Argon2 object (which owns the 64 MB work area, pinned) and never dispose it,
-        // so EVERY call kept 64 MB for the life of the process: 8 sign-ins left 493 MB behind even after a forced full garbage collection, and one
-        // user import (up to 100 accounts, each hashed) would have kept 6.4 GB. Here the same computation is done with the library's public pieces
-        // and everything disposable is disposed. The parameters, the pepper handling and the text format of the hash are exactly what they were,
-        // so every stored password still verifies and every new hash still verifies in the legacy Admin (EVoting.Api.Tests/PasswordServiceTests.cs).
+        // F-50. The Isopoh.Cryptography.Argon2 1.0.2 library used here before locked its 64 MB work area into RAM ("secure memory").
+        // On the Windows server every staff sign-in then committed up to ~2 GB, much of it never returned (live server 2026-11-13:
+        // 76 MB -> 2.5 GB after three sign-ins; 11 GB after ~20, then 14-25 s per sign-in while that memory was paged in and out).
+        // Its successor 2.0.0 crashed the API in testing (heap corruption). Konscious.Security.Cryptography.Argon2 computes the same
+        // Argon2 in plain managed memory that the garbage collector frees normally. The stored text is read and written here exactly
+        // as 1.0.2 wrote it ("$argon2i$v=19$m=65536,t=3,p=4$<salt>$<hash>", padded Base64; unpadded Base64 is read too), so every
+        // stored password still verifies (EVoting.Api.Tests/PasswordLibraryUpgradeTests.cs holds hashes made by the deployed 1.0.2).
+
+        // Limits for reading a stored hash (ours: m=64 MB, t=3, p=4): a damaged value must not make one sign-in allocate gigabytes.
+        private const int MaxMemoryKb = 1024 * 1024;
+        private const int MaxTimeCost = 32;
+        private const int MaxLanes    = 16;
+
+        // Each check needs 64 MB and 4 threads for ~0.2-0.4 s. Without a limit, 40 desks signing in at the same moment hold 2.5 GB at
+        // once (test machine: 2.3-3.9 GB). At most this many run together; the others wait their turn (a fraction of a second each).
+        // 28 logical CPUs (the Altos P10 F9) -> 6 at once -> at most ~400 MB for password checks, whatever the burst.
+        private static readonly SemaphoreSlim Gate = new(MaxConcurrentChecks, MaxConcurrentChecks);
+        internal static int MaxConcurrentChecks => Math.Clamp(Environment.ProcessorCount / 4, 2, 6);
 
         public bool Verify(string inputPassword, string storedHash)
         {
             if (string.IsNullOrEmpty(inputPassword) || string.IsNullOrEmpty(storedHash))
                 return false;
+            if (!TryParse(storedHash, out var stored))
+                return false;   // not an Argon2 hash we can read: never matches (1.0.2 answered false as well)
 
-            var config = new Argon2Config
-            {
-                Password = Encoding.UTF8.GetBytes(inputPassword + _pepper),
-                ClearPassword = true
-            };
-            SecureArray<byte>? expected = null;
+            byte[] password = Encoding.UTF8.GetBytes(inputPassword + _pepper);
+            byte[]? actual = null;
             try
             {
-                // The type, version, cost, lanes, salt and hash length are read from the stored text, so a hash made with other settings still verifies.
-                if (!config.DecodeString(storedHash, out expected) || expected == null)
-                    return false;
-                config.Threads = Math.Max(1, config.Lanes);
-
-                using var argon2 = new Argon2(config);
-                using var actual = argon2.Hash();
-                return CryptographicOperations.FixedTimeEquals(expected.Buffer, actual.Buffer);
-            }
-            catch (Exception ex) when (ex is FormatException or ArgumentException or OverflowException)
-            {
-                return false;   // a stored value that is not an Argon2 hash never matches (the library's own Verify answered false as well)
+                actual = Compute(stored.Type, password, stored.Salt, stored.TimeCost, stored.MemoryKb, stored.Lanes, stored.Hash.Length);
+                return CryptographicOperations.FixedTimeEquals(stored.Hash, actual);
             }
             finally
             {
-                expected?.Dispose();
+                CryptographicOperations.ZeroMemory(password);
+                if (actual != null) CryptographicOperations.ZeroMemory(actual);
             }
         }
 
@@ -99,22 +100,97 @@ namespace EVoting.Api.Services
             if (string.IsNullOrEmpty(password))
                 throw new ArgumentException("Password cannot be null or empty.", nameof(password));
 
-            var config = new Argon2Config
+            byte[] pw = Encoding.UTF8.GetBytes(password + _pepper);
+            byte[] salt = RandomNumberGenerator.GetBytes(SaltLength);
+            try
             {
-                Type = Argon2Type.DataIndependentAddressing,
-                Version = Argon2Version.Nineteen,
-                TimeCost = TimeCost,
-                MemoryCost = MemoryCost,
-                Lanes = Parallelism,
-                Threads = Parallelism,
-                HashLength = HashLength,
-                Password = Encoding.UTF8.GetBytes(password + _pepper),
-                Salt = RandomNumberGenerator.GetBytes(SaltLength),
-                ClearPassword = true
+                byte[] hash = Compute("argon2i", pw, salt, TimeCost, MemoryCost, Parallelism, HashLength);
+                return string.Create(CultureInfo.InvariantCulture,
+                    $"$argon2i$v=19$m={MemoryCost},t={TimeCost},p={Parallelism}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}");
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(pw);
+            }
+        }
+
+        private static byte[] Compute(string type, byte[] password, byte[] salt, int timeCost, int memoryKb, int lanes, int length)
+        {
+            Gate.Wait();
+            try
+            {
+                return ComputeNow(type, password, salt, timeCost, memoryKb, lanes, length);
+            }
+            finally
+            {
+                Gate.Release();
+            }
+        }
+
+        private static byte[] ComputeNow(string type, byte[] password, byte[] salt, int timeCost, int memoryKb, int lanes, int length)
+        {
+            using Argon2 argon2 = type switch
+            {
+                "argon2i" => new Argon2i(password),
+                "argon2d" => new Argon2d(password),
+                _ => new Argon2id(password),
             };
-            using var argon2 = new Argon2(config);
-            using var hash = argon2.Hash();
-            return config.EncodeString(hash.Buffer);
+            argon2.Salt = salt;
+            argon2.Iterations = timeCost;
+            argon2.MemorySize = memoryKb;
+            argon2.DegreeOfParallelism = lanes;
+            return argon2.GetBytes(length);
+        }
+
+        private readonly record struct StoredHash(string Type, int MemoryKb, int TimeCost, int Lanes, byte[] Salt, byte[] Hash);
+
+        /// <summary>Reads "$argon2i$v=19$m=65536,t=3,p=4$salt$hash" (type argon2i/argon2d/argon2id, version 19 only).</summary>
+        private static bool TryParse(string text, out StoredHash stored)
+        {
+            stored = default;
+            var parts = text.Split('$');
+            if (parts.Length != 6 || parts[0].Length != 0)
+                return false;
+            if (parts[1] is not ("argon2i" or "argon2d" or "argon2id") || parts[2] != "v=19")
+                return false;
+            int m = 0, t = 0, p = 0;
+            foreach (var pair in parts[3].Split(','))
+            {
+                var kv = pair.Split('=');
+                if (kv.Length != 2 || !int.TryParse(kv[1], NumberStyles.None, CultureInfo.InvariantCulture, out int value))
+                    return false;
+                switch (kv[0])
+                {
+                    case "m": m = value; break;
+                    case "t": t = value; break;
+                    case "p": p = value; break;
+                    default: return false;
+                }
+            }
+            if (t < 1 || t > MaxTimeCost || p < 1 || p > MaxLanes || m < 8 * p || m > MaxMemoryKb)
+                return false;
+            if (!TryBase64(parts[4], out var salt) || salt.Length < 8)
+                return false;
+            if (!TryBase64(parts[5], out var hash) || hash.Length < 4 || hash.Length > 1024)
+                return false;
+            stored = new StoredHash(parts[1], m, t, p, salt, hash);
+            return true;
+        }
+
+        private static bool TryBase64(string text, out byte[] bytes)
+        {
+            bytes = Array.Empty<byte>();
+            if (text.Length == 0)
+                return false;
+            try
+            {
+                bytes = Convert.FromBase64String(text.PadRight(text.Length + (4 - text.Length % 4) % 4, '='));
+                return true;
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
         }
 
         public string GenerateTemporaryPassword()

@@ -29,7 +29,14 @@ namespace EVoting.Api.Models.Requests
 
     public class VoterVerifyRequest
     {
-        [Required] public string AccountCode { get; set; } = "";
+        /// <summary>
+        /// The member's account code (identity), OR the voting pass read from the Registration QR (EVP1-...). Old clients put whatever
+        /// the QR holds here, so a pass arriving in this field is recognised by its prefix.
+        /// </summary>
+        public string AccountCode { get; set; } = "";
+
+        /// <summary>Optional: the voting pass, for clients that send it separately. Takes precedence over AccountCode.</summary>
+        public string? VotingPass { get; set; }
     }
 
     // ── Votes ─────────────────────────────────────────────────────────────────
@@ -168,6 +175,9 @@ namespace EVoting.Api.Models.Responses
         public DateTime ScheduleFrom { get; set; }
         public DateTime ScheduleTo { get; set; }
         public string Status { get; set; } = "";
+
+        /// <summary>ADDITIVE. GENERAL_ASSEMBLY (default, also for clients that predate it) or REPRESENTATIVE.</summary>
+        public string EventType { get; set; } = "GENERAL_ASSEMBLY";
     }
 
     // ── Votes ─────────────────────────────────────────────────────────────────
@@ -236,6 +246,9 @@ namespace EVoting.Api.Models.Responses
         public string Status { get; set; } = "";
         public bool IsActive { get; set; }
         public List<BranchResponse> Branches { get; set; } = new();
+
+        /// <summary>ADDITIVE. GENERAL_ASSEMBLY (default) or REPRESENTATIVE: tells a kiosk which ballot to show.</summary>
+        public string EventType { get; set; } = "GENERAL_ASSEMBLY";
     }
 
     // ── Candidates ────────────────────────────────────────────────────────────
@@ -294,6 +307,16 @@ namespace EVoting.Api.Models.Responses
         public int MemberId { get; set; }
         /// <summary>When the QR was actually generated on the station — not when this sync request happens to arrive.</summary>
         public DateTime IssuedAtUtc { get; set; }
+    }
+
+    /// <summary>Answer of POST registration/members/{id}/voting-pass. VotingPass is shown ONCE: print it in the QR, do not store it.</summary>
+    public class VotingPassResponse
+    {
+        public int MemberId { get; set; }
+        public int EventId { get; set; }
+        public string VotingPass { get; set; } = "";
+        public DateTime QrIssuedAt { get; set; }
+        public int RevokedEarlier { get; set; }
     }
 
     public class QrIssuanceBulkRequest

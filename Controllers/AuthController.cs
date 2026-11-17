@@ -21,12 +21,14 @@ namespace EVoting.Api.Controllers
         private readonly IConfiguration _config;
         private readonly ILogger<AuthController> _logger;
         private readonly IAuditService _audit;
+        private readonly ISessionRegistry _sessions;
 
         public AuthController(
             ApiDbContext db, IPasswordService passwords,
             ITokenService tokens, IConfiguration config,
-            ILogger<AuthController> logger, IAuditService audit)
+            ILogger<AuthController> logger, IAuditService audit, ISessionRegistry sessions)
         {
+            _sessions = sessions;
             _db = db;
             _passwords = passwords;
             _tokens = tokens;
@@ -78,13 +80,17 @@ namespace EVoting.Api.Controllers
                 return Unauthorized(new ApiError { Error = "Invalid username or password.", Code = "INVALID_CREDENTIALS" });
             }
 
-            var token = _tokens.GenerateAdminToken(user!);
             // BUG FIX: int.Parse throws on non-numeric config value; use TryParse with fallback.
             if (!int.TryParse(_config["Jwt:AdminTokenExpiryMinutes"], out int expiry))
                 expiry = 480;
 
-            _logger.LogInformation("Admin login: UserId={Id} Username={Username}", user!.Id, user.Username);
-            await TryAuditAsync(AuditActions.Login, user.Id, user.Username, "Signed in to the Admin application.", ct);
+            // Single session: this sign-in becomes the account's only valid Admin session (an earlier one on another PC ends).
+            var (sessionId, replaced) = await _sessions.StartAsync(user!.Id, SessionRegistry.AppAdmin, TimeSpan.FromMinutes(expiry), ct);
+            var token = _tokens.GenerateAdminToken(user!, sessionId);
+
+            _logger.LogInformation("Admin login: UserId={Id} Username={Username} ReplacedSession={Replaced}", user!.Id, user.Username, replaced);
+            await TryAuditAsync(AuditActions.Login, user.Id, user.Username,
+                replaced ? "Signed in to the Admin application (the session on another computer was ended)." : "Signed in to the Admin application.", ct);
 
             return Ok(new TokenResponse
             {
@@ -160,6 +166,7 @@ namespace EVoting.Api.Controllers
         public async Task<IActionResult> Logout(CancellationToken ct)
         {
             var a = _audit.Actor;
+            await _sessions.EndAsync(User, ct); // the token itself stops working now
             await TryAuditAsync(AuditActions.Logout, a.UserId, a.Username, "Signed out of the Admin application.", ct);
             return Ok(new MessageResponse { Message = "Signed out." });
         }
@@ -182,7 +189,7 @@ namespace EVoting.Api.Controllers
         /// </summary>
         [HttpPost("registration-login")]
         [AllowAnonymous]
-        [EnableRateLimiting("admin-login")]
+        [EnableRateLimiting("registration-login")]
         public async Task<IActionResult> RegistrationLogin(
             [FromBody] AdminLoginRequest req, CancellationToken ct)
         {
@@ -202,12 +209,15 @@ namespace EVoting.Api.Controllers
                 return Unauthorized(new ApiError { Error = "Invalid username or password." });
             }
 
-            var token = _tokens.GenerateRegistrationToken(user!);
             if (!int.TryParse(_config["Jwt:AdminTokenExpiryMinutes"], out int expiry))
                 expiry = 480;
 
-            _logger.LogInformation("Registration-station login: UserId={Id} Username={Username}",
-                user!.Id, user.Username);
+            // Single session: this sign-in becomes the account's only valid Registration session.
+            var (sessionId, replaced) = await _sessions.StartAsync(user!.Id, SessionRegistry.AppRegistration, TimeSpan.FromMinutes(expiry), ct);
+            var token = _tokens.GenerateRegistrationToken(user!, sessionId);
+
+            _logger.LogInformation("Registration-station login: UserId={Id} Username={Username} ReplacedSession={Replaced}",
+                user!.Id, user.Username, replaced);
 
             return Ok(new TokenResponse
             {
@@ -365,13 +375,65 @@ namespace EVoting.Api.Controllers
             if (ev == null)
                 return NotFound(new ApiError { Error = "No election event is currently open." });
 
-            // Find the member
-            var member = await _db.Members
-                .AsNoTracking()
-                .Include(m => m.Branch)
-                .FirstOrDefaultAsync(m =>
-                    m.AccountCode == req.AccountCode &&
-                    m.IsActive, ct);
+            // ── Who is this? ──────────────────────────────────────────────────
+            // The account code is the member's IDENTITY. A voting pass (EVP1-..., the random token in the Registration QR) is
+            // PROOF that the slip came from the Registration desk. Old clients send whatever the QR holds as "accountCode",
+            // so a pass is recognised in either field.
+            var passText = VotingPass.Normalize(req.VotingPass) ?? VotingPass.Normalize(req.AccountCode);
+            bool viaPass = passText != null;
+
+            // At the General Assembly VENUE every voter has been to the Registration desk, so a venue kiosk can insist on the
+            // pass and refuse a typed account code (which can be guessed). The mobile pages are NOT venue kiosks: members who
+            // cannot attend still vote there with their account code, so their gateways (kioskId starting with the configured
+            // prefix, default "MOBILE-") are exempt. Note: kioskId is chosen by the caller of kiosk-login, so this is an
+            // operating rule for honest kiosks, not a boundary against someone who holds the kiosk secret.
+            var kioskId = User.FindFirst("kioskId")?.Value ?? "";
+            var mobilePrefix = _config["Security:VotingPass:MobileGatewayKioskPrefix"];
+            if (string.IsNullOrWhiteSpace(mobilePrefix)) mobilePrefix = "MOBILE-";
+            bool isMobileGateway = kioskId.StartsWith(mobilePrefix, StringComparison.OrdinalIgnoreCase);
+            bool passRequired = !isMobileGateway &&
+                                ev.EventType == Infrastructure.Entities.EventTypes.GeneralAssembly &&
+                                _config.GetValue("Security:VotingPass:RequiredAtGeneralAssemblyKiosks", false);
+
+            Infrastructure.Entities.MemberEntity? member;
+            if (viaPass)
+            {
+                var hash = VotingPass.Hash(passText!);
+                var vp = await _db.VotingPasses.AsNoTracking().FirstOrDefaultAsync(p => p.PassHash == hash, ct);
+                if (vp == null || vp.RevokedAt != null || vp.EventId != ev.EventId)
+                {
+                    _logger.LogWarning("Voter verify: voting pass not valid for EventId={EventId} (unknown, revoked or other election) KioskId={KioskId}",
+                        ev.EventId, kioskId);
+                    return NotFound(new ApiError
+                    {
+                        Error = "This QR code is not valid for the election that is open now. Please go to the Registration desk.",
+                        Code = "VOTING_PASS_INVALID"
+                    });
+                }
+
+                member = await _db.Members.AsNoTracking().Include(m => m.Branch)
+                    .FirstOrDefaultAsync(m => m.MemberId == vp.MemberId && m.IsActive, ct);
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(req.AccountCode))
+                    return BadRequest(new ApiError { Error = "The account code is required.", Code = "VALIDATION" });
+
+                if (passRequired)
+                    return StatusCode(403, new ApiError
+                    {
+                        Error = "At the General Assembly venue, scan the QR code from the Registration desk.",
+                        Detail = "A typed account code is not accepted at the venue kiosks. Members who cannot attend vote on the mobile page.",
+                        Code = "VOTING_PASS_REQUIRED"
+                    });
+
+                member = await _db.Members
+                    .AsNoTracking()
+                    .Include(m => m.Branch)
+                    .FirstOrDefaultAsync(m =>
+                        m.AccountCode == req.AccountCode &&
+                        m.IsActive, ct);
+            }
 
             if (member == null)
                 return NotFound(new ApiError { Error = "Member not found." });
@@ -407,8 +469,8 @@ namespace EVoting.Api.Controllers
             if (!int.TryParse(_config["Jwt:VoterTokenExpiryMinutes"], out int expiry))
                 expiry = 15;
 
-            _logger.LogInformation("Voter verified: MemberId={MemberId} EventId={EventId}",
-                member.MemberId, ev.EventId);
+            _logger.LogInformation("Voter verified: MemberId={MemberId} EventId={EventId} Via={Via} KioskId={KioskId}",
+                member.MemberId, ev.EventId, viaPass ? "pass" : "account-code", kioskId);
 
             return Ok(new VoterVerifyResponse
             {
@@ -433,7 +495,8 @@ namespace EVoting.Api.Controllers
                     Venue = ev.Venue,
                     ScheduleFrom = ev.ScheduleFrom,
                     ScheduleTo = ev.ScheduleTo,
-                    Status = ev.Status
+                    Status = ev.Status,
+                    EventType = ev.EventType
                 }
             });
         }

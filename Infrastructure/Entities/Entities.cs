@@ -166,6 +166,26 @@ namespace EVoting.Api.Infrastructure.Entities
         public DateTime UpdatedAt { get; set; }
         public bool IsActive { get; set; } = true;
         public ICollection<EventBranchEntity> EventBranches { get; set; } = new List<EventBranchEntity>();
+
+        /// <summary>
+        /// GENERAL_ASSEMBLY (default for every event that existed before the Representative module) or REPRESENTATIVE.
+        /// Decides which ballot, vote table and results aggregation an event uses; everything else (lifecycle, branches,
+        /// scheduler, audit, eligibility, receipts) is shared.
+        /// </summary>
+        [MaxLength(30)] public string EventType { get; set; } = EventTypes.GeneralAssembly;
+
+        /// <summary>
+        /// Set the first time a REPRESENTATIVE event is opened. From then on its candidate roster and position rules are
+        /// frozen, so a roster that kiosks have cached (or an offline ballot that references it) can never silently change.
+        /// NULL = still being prepared ("Draft" for roster purposes).
+        /// </summary>
+        public DateTime? RosterLockedAt { get; set; }
+
+        /// <summary>Eligibility thresholds in force when the event was opened (documentation / audit; see docs).</summary>
+        [Column(TypeName = "decimal(18,2)")] public decimal? EligibilityMinShareCapital { get; set; }
+        [Column(TypeName = "decimal(18,2)")] public decimal? EligibilityMinSavingsDeposit { get; set; }
+
+        public bool IsRepresentative => EventType == EventTypes.Representative;
     }
 
     // ── EventBranches ─────────────────────────────────────────────────────────
@@ -232,8 +252,17 @@ namespace EVoting.Api.Infrastructure.Entities
         public int EventId { get; set; }
         [ForeignKey("EventId")] public virtual EventEntity? Event { get; set; }
         [MaxLength(100)] public string Position { get; set; } = "";
+        /// <summary>Minimum selections a voter must make at this position on one ballot.</summary>
         public int MinVotes { get; set; } = 1;
+        /// <summary>Maximum selections a voter may make at this position on one ballot.</summary>
         public int MaxVotes { get; set; } = 1;
+        /// <summary>Number of winning seats (used by results; unchanged meaning).</summary>
         public int TotalSeats { get; set; } = 1;
+        /// <summary>
+        /// Maximum number of candidates allowed to take part at this position in this event. NOT the same as MaxVotes
+        /// (picks per ballot) nor TotalSeats (winners). NULL = no limit configured (all pre-existing rules).
+        /// Hard-enforced when assigning Representative candidates; advisory for General Assembly.
+        /// </summary>
+        public int? MaxCandidates { get; set; }
     }
 }

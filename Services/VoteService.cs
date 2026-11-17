@@ -116,7 +116,8 @@ namespace EVoting.Api.Services
         ///
         /// Duplicate-vote safety:
         ///   Layer 1 — Pre-flight HasVotedAsync() check exists at the caller level.
-        ///   Layer 2 — SELECT FOR UPDATE inside REPEATABLE READ transaction.
+        ///   Layer 2 — SELECT FOR UPDATE inside a READ COMMITTED transaction (2026-11-12, decision D-4: REPEATABLE READ took
+        ///             gap locks on a voterlogs row that does not exist yet, and neighbouring voters deadlocked; see the audit F-23).
         ///   Layer 3 — UNIQUE constraint on the vote table.
         ///
         /// Receipt code uses CSPRNG.
@@ -146,7 +147,7 @@ namespace EVoting.Api.Services
 
             await using var tx = await _db.Database
                 .BeginTransactionAsync(
-                    IsolationLevel.RepeatableRead,
+                    IsolationLevel.ReadCommitted,
                     ct);
 
             try
@@ -220,6 +221,15 @@ namespace EVoting.Api.Services
 
                 return receiptCode;
             }
+            catch (Exception ex) when (IsDuplicateKey(ex))
+            {
+                // D-4: READ COMMITTED takes no gap lock on a voterlogs row that does not exist yet, so two submissions of the SAME
+                // member can both reach the INSERT. The unique index UQ_VoterLogs_Member_Event (or the votes index) refuses the
+                // second one. That is a duplicate ballot and is answered like the row-lock path answers it: "already voted" (409).
+                await tx.RollbackAsync(ct);
+                _db.ChangeTracker.Clear();
+                throw new InvalidOperationException("Member has already voted in this event.", ex);
+            }
             catch
             {
                 await tx.RollbackAsync(ct);
@@ -232,7 +242,7 @@ namespace EVoting.Api.Services
         /// Written as a separate method on purpose so the original CastVotesAsync path that every deployed kiosk uses today
         /// is not touched by this change.
         ///
-        /// Duplicate-vote safety is identical: SELECT ... FOR UPDATE on the member's voterlogs row inside a REPEATABLE READ
+        /// Duplicate-vote safety is identical: SELECT ... FOR UPDATE on the member's voterlogs row inside a READ COMMITTED
         /// transaction, plus the UNIQUE (MemberId, EventId) index on voterlogs and (MemberId, EventId, CandidacyId) on votes.
         ///
         /// It takes the same gap lock on a voterlogs row that may not exist yet as CastVotesAsync does, so two ballots of
@@ -274,7 +284,7 @@ namespace EVoting.Api.Services
 
             await using var tx = await _db.Database
                 .BeginTransactionAsync(
-                    IsolationLevel.RepeatableRead,
+                    IsolationLevel.ReadCommitted,
                     ct);
 
             try
@@ -378,6 +388,23 @@ namespace EVoting.Api.Services
 
                 return (clientReceiptCode, false, now);
             }
+            catch (Exception ex) when (IsDuplicateKey(ex))
+            {
+                // D-4: a racing submission of the same member committed first. Same receipt = this request is a retry of that
+                // ballot (answer it as a replay); any other receipt = a genuine second ballot ("already voted").
+                await tx.RollbackAsync(ct);
+                _db.ChangeTracker.Clear();
+                var stored = await _db.VoterLogs.AsNoTracking()
+                    .FirstOrDefaultAsync(v => v.MemberId == memberId && v.EventId == eventId && v.HasVoted, ct);
+                if (stored != null && string.Equals(stored.ReceiptCode, clientReceiptCode, StringComparison.Ordinal))
+                {
+                    _logger.LogInformation(
+                        "Online vote replay recognized after a racing duplicate: EventId={EventId} Receipt={Receipt}",
+                        eventId, clientReceiptCode);
+                    return (clientReceiptCode, true, stored.VotedAt ?? now);
+                }
+                throw new InvalidOperationException("Member has already voted in this event.", ex);
+            }
             catch
             {
                 await tx.RollbackAsync(ct);
@@ -434,7 +461,7 @@ namespace EVoting.Api.Services
 
             await using var tx = await _db.Database
                 .BeginTransactionAsync(
-                    IsolationLevel.RepeatableRead,
+                    IsolationLevel.ReadCommitted,
                     ct);
 
             try
@@ -606,6 +633,23 @@ namespace EVoting.Api.Services
                     clientReceiptCode,
                     false);
             }
+            catch (Exception ex) when (IsDuplicateKey(ex))
+            {
+                // D-4: a racing sync (or online ballot) of the same member committed first. Same receipt = safe replay.
+                await tx.RollbackAsync(ct);
+                _db.ChangeTracker.Clear();
+                var stored = await _db.VoterLogs.AsNoTracking()
+                    .FirstOrDefaultAsync(v => v.MemberId == memberId && v.EventId == eventId && v.HasVoted, ct);
+                if (stored != null && !string.IsNullOrWhiteSpace(stored.ReceiptCode) &&
+                    string.Equals(stored.ReceiptCode, clientReceiptCode, StringComparison.Ordinal))
+                {
+                    _logger.LogInformation(
+                        "Offline vote replay recognized after a racing duplicate: EventId={EventId} Receipt={Receipt}",
+                        eventId, clientReceiptCode);
+                    return (stored.ReceiptCode, true);
+                }
+                throw new InvalidOperationException("Member has already voted in this event.", ex);
+            }
             catch
             {
                 await tx.RollbackAsync(ct);
@@ -649,6 +693,18 @@ namespace EVoting.Api.Services
                         ct);
                 }
             }
+        }
+
+        /// <summary>MySQL 1062: a unique index refused a row (D-4: the duplicate guard under READ COMMITTED).</summary>
+        private static bool IsDuplicateKey(Exception? ex)
+        {
+            for (; ex != null; ex = ex.InnerException)
+            {
+                if (ex is MySqlConnector.MySqlException my &&
+                    my.ErrorCode == MySqlConnector.MySqlErrorCode.DuplicateKeyEntry)
+                    return true;
+            }
+            return false;
         }
 
         private static bool IsDeadlock(Exception? ex)
@@ -801,6 +857,11 @@ namespace EVoting.Api.Services
                     $"Event {eventId} not found or inactive.",
                     nameof(eventId));
             }
+
+            // A Representative election has its own ballot, vote table and endpoint. The General Assembly vote paths (online,
+            // client-receipt and offline) must never write a General Assembly vote - or mark the voter as having voted - for it.
+            if (!string.Equals(ev.EventType, EventTypes.GeneralAssembly, StringComparison.Ordinal))
+                throw new WrongEventTypeException(ev.EventId, ev.EventType);
 
             return ev;
         }

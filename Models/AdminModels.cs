@@ -377,13 +377,23 @@ namespace EVoting.Api.Models.Admin
         public int BranchCount { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+        /// <summary>GENERAL_ASSEMBLY (default) or REPRESENTATIVE. Fixed when the event is created.</summary>
+        public string EventType { get; set; } = "GENERAL_ASSEMBLY";
     }
 
     public class EventDetail : EventRow
     {
         public List<int> BranchIds { get; set; } = new();
         public int VoterLogCount { get; set; }
+        /// <summary>General Assembly: vote rows. Representative: candidate selections (vote rows) — not ballots; see VoterLogCount for ballots.</summary>
         public int VoteCount { get; set; }
+        /// <summary>Representative: candidates on the roster (approved). 0 for General Assembly.</summary>
+        public int CandidateCount { get; set; }
+        /// <summary>Representative: when the roster froze (first opening). Null while still being prepared.</summary>
+        public DateTime? RosterLockedAt { get; set; }
+        /// <summary>Eligibility thresholds recorded when the event was opened (null if it has never been opened).</summary>
+        public decimal? EligibilityMinShareCapital { get; set; }
+        public decimal? EligibilityMinSavingsDeposit { get; set; }
     }
 
     public class EventUpsertRequest
@@ -394,6 +404,9 @@ namespace EVoting.Api.Models.Admin
         [Required] public DateTime ScheduleTo { get; set; }
         [Required, MinLength(1, ErrorMessage = "Select at least one branch.")] public List<int> BranchIds { get; set; } = new();
         public DateTime? ExpectedUpdatedAt { get; set; }
+
+        /// <summary>GENERAL_ASSEMBLY (default when omitted) or REPRESENTATIVE. Honoured on create only; an update that names a different type is refused.</summary>
+        [MaxLength(30)] public string? EventType { get; set; }
     }
 
     public class OpenEventRequest

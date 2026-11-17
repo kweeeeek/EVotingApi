@@ -58,6 +58,8 @@ namespace EVoting.Api.Services
         private readonly HashSet<int> _suppressedLogged = new();
         // Same for "another election is still running inside its own window — not pre-empting it".
         private readonly HashSet<int> _overlapLogged = new();
+        // Same for "the election is due to open but is not ready (e.g. empty Representative roster) — not auto-opening".
+        private readonly HashSet<int> _notReadyLogged = new();
 
         /// <summary>
         /// FIX: the scheduler used to re-open ANY Closed event whose window was active, so an administrator who closed an
@@ -98,6 +100,7 @@ namespace EVoting.Api.Services
             var db    = scope.ServiceProvider.GetRequiredService<ApiDbContext>();
             var cache = scope.ServiceProvider.GetRequiredService<IDistributedCache>();
             var audit = scope.ServiceProvider.GetRequiredService<IAuditService>();   // no HttpContext here ⇒ actor = SYSTEM
+            var gate  = scope.ServiceProvider.GetRequiredService<IEventOpenGate>();
 
             // ── TIMEZONE: Admin saves schedules as DateTime.Now (local Philippines time).
             // API server is on the same LAN machine → also local time.
@@ -109,6 +112,7 @@ namespace EVoting.Api.Services
                 .ToListAsync(ct);
 
             bool anyChanged = false;
+            bool stagedAuditOnly = false;      // an audit row (e.g. "opening blocked") that must be saved even though no event changed
 
             // FIX (Bug 2): Track changed events in an EXPLICIT list.
             // Old code used:  events.Where(e => e.UpdatedAt == now)
@@ -141,6 +145,24 @@ namespace EVoting.Api.Services
                         continue;
                     }
 
+                    // An election that is not ready (e.g. a Representative roster with no candidates, or an unfinished eligibility
+                    // recalculation) is never opened automatically: the same checks as the manual Open apply. Logged/audited once.
+                    var readiness = await gate.EvaluateAsync(ev, ct);
+                    if (!readiness.CanOpen)
+                    {
+                        if (_notReadyLogged.Add(ev.EventId))
+                        {
+                            _logger.LogWarning(
+                                "[Scheduler] EventId={EventId} '{Title}' is due to open but is NOT READY — not auto-opening. {Issues}",
+                                ev.EventId, ev.Title, string.Join(" | ", readiness.Issues));
+                            audit.Stage(AuditActions.OpenEventBlocked, AuditEntities.Event, ev.EventId,
+                                $"Automatic opening of '{ev.Title}' was refused: {string.Join(" ", readiness.Issues)}");
+                            stagedAuditOnly = true;
+                        }
+                        continue;
+                    }
+                    _notReadyLogged.Remove(ev.EventId);
+
                     // Close any other open events first (only one open at a time)
                     foreach (var other in events.Where(e => e.EventId != ev.EventId && e.Status == "Opened"))
                     {
@@ -154,6 +176,7 @@ namespace EVoting.Api.Services
                             other.EventId, other.Title);
                     }
 
+                    await gate.StampOpenedAsync(ev, now, ct);     // freezes a Representative roster, records the eligibility thresholds
                     ev.Status    = "Opened";
                     ev.UpdatedAt = now;
                     anyChanged   = true;
@@ -181,9 +204,10 @@ namespace EVoting.Api.Services
                 }
             }
 
-            if (!anyChanged) return;
+            if (!anyChanged && !stagedAuditOnly) return;
 
             await db.SaveChangesAsync(ct);
+            if (!anyChanged) return;
 
             // Evict cache so kiosk poll returns fresh data immediately
             try   { await cache.RemoveAsync("current_open_event", ct); }

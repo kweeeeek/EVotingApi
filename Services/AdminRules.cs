@@ -66,6 +66,15 @@ namespace EVoting.Api.Services
     /// </summary>
     public static class MemberEligibilityPolicy
     {
+        /// <summary>
+        /// A whole-peso threshold reads "₱3,000" exactly as before; a threshold with centavos keeps them ("₱3,000.25") so the remark can
+        /// never claim "below ₱3,000" about a balance of ₱3,000.24. EligibilityService.RecomputeAsync produces the same text in SQL.
+        /// </summary>
+        public static string Threshold(decimal value) =>
+            value == decimal.Truncate(value)
+                ? value.ToString("N0", CultureInfo.InvariantCulture)
+                : value.ToString("N2", CultureInfo.InvariantCulture);
+
         public static (bool IsEligible, string Remarks) Evaluate(
             decimal shareCapital, decimal savingsDeposit, LoanStatus loanStatus, EligibilityOptions? options = null)
         {
@@ -74,10 +83,10 @@ namespace EVoting.Api.Services
             var ph = CultureInfo.InvariantCulture;
 
             if (shareCapital < o.MinShareCapital)
-                remarks.Add($"Share Capital is below ₱{o.MinShareCapital.ToString("N0", ph)} (Current: ₱{shareCapital.ToString("N2", ph)})");
+                remarks.Add($"Share Capital is below ₱{Threshold(o.MinShareCapital)} (Current: ₱{shareCapital.ToString("N2", ph)})");
 
             if (savingsDeposit < o.MinSavingsDeposit)
-                remarks.Add($"Savings Deposit is below ₱{o.MinSavingsDeposit.ToString("N0", ph)} (Current: ₱{savingsDeposit.ToString("N2", ph)})");
+                remarks.Add($"Savings Deposit is below ₱{Threshold(o.MinSavingsDeposit)} (Current: ₱{savingsDeposit.ToString("N2", ph)})");
 
             if (loanStatus == LoanStatus.PastDue)
                 remarks.Add("Loan Status is Past Due");

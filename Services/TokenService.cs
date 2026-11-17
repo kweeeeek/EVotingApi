@@ -1,4 +1,4 @@
-using EVoting.Api.Infrastructure.Entities;
+﻿using EVoting.Api.Infrastructure.Entities;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -8,8 +8,8 @@ namespace EVoting.Api.Services
 {
     public interface ITokenService
     {
-        string GenerateAdminToken(UserEntity user);
-        string GenerateRegistrationToken(UserEntity user);
+        string GenerateAdminToken(UserEntity user, string? sessionId = null);
+        string GenerateRegistrationToken(UserEntity user, string? sessionId = null);
         /// <summary>
         /// ADDITIVE: token for a non-interactive Registration Station. Same "Registration" role as the interactive login (so
         /// every [Authorize(Roles = "Registration,...")] endpoint accepts it) but NO user id and NO permission claims: it can
@@ -39,7 +39,7 @@ namespace EVoting.Api.Services
         }
 
         // gagawa ng token para sa admin user, kasama ang mga claims tulad ng user id, username, email, role, full name, branch id, at permission codes
-        public string GenerateAdminToken(UserEntity user)
+        public string GenerateAdminToken(UserEntity user, string? sessionId = null)
         {
             var claims = new List<Claim>
             {
@@ -55,6 +55,10 @@ namespace EVoting.Api.Services
             foreach (var perm in user.PermissionCodes)
                 claims.Add(new Claim("permission", perm));
 
+            // Single session: the id of THIS sign-in (see Security/SessionRegistry).
+            if (!string.IsNullOrEmpty(sessionId))
+                claims.Add(new Claim(EVoting.Api.Security.SessionRegistry.ClaimName, sessionId));
+
          
             if (!int.TryParse(_config["Jwt:AdminTokenExpiryMinutes"], out int adminExpiry))
                 adminExpiry = 480;
@@ -63,7 +67,7 @@ namespace EVoting.Api.Services
         }
 
         //gagawa ng token para sa registration user, kasama ang mga claims tulad ng user id, username, email, role, full name, branch id, at permission codes
-        public string GenerateRegistrationToken(UserEntity user)
+        public string GenerateRegistrationToken(UserEntity user, string? sessionId = null)
         {
             
             var claims = new List<Claim>
@@ -79,6 +83,10 @@ namespace EVoting.Api.Services
            
             foreach (var perm in user.PermissionCodes)
                 claims.Add(new Claim("permission", perm));
+
+            // Single session: the id of THIS sign-in (see Security/SessionRegistry).
+            if (!string.IsNullOrEmpty(sessionId))
+                claims.Add(new Claim(EVoting.Api.Security.SessionRegistry.ClaimName, sessionId));
 
            
             if (!int.TryParse(_config["Jwt:AdminTokenExpiryMinutes"], out int regExpiry))
