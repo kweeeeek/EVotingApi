@@ -89,7 +89,7 @@ namespace EVoting.Api.Controllers
         // ── GET /api/v1/admin/members/{id}/vote-status ───────────────────────
         /// <summary>Check if a specific member has voted in an event.</summary>
         [HttpGet("members/{memberId:int}/vote-status/{eventId:int}")]
-        [RequirePermission(PermissionCodes.MemberView, PermissionCodes.EventView)]
+        [RequirePermission(PermissionCodes.MemberView, PermissionCodes.VoterLookupView)]
         public async Task<IActionResult> GetMemberVoteStatus(
             int memberId, int eventId, CancellationToken ct)
         {
@@ -424,7 +424,7 @@ namespace EVoting.Api.Controllers
         // only shows branches that actually have eligible voters for the event,
         // matching exactly what the voter-lookup and turnout-by-branch endpoints use.
         [HttpGet("events/{eventId:int}/branches")]
-        [RequirePermission(PermissionCodes.EventView)]
+        [RequirePermission(PermissionCodes.EventView, PermissionCodes.VoterLookupView, PermissionCodes.ReportView)]
         public async Task<IActionResult> GetEventBranches(int eventId, CancellationToken ct)
         {
             var ev = await _db.Events.AsNoTracking()
@@ -453,7 +453,10 @@ namespace EVoting.Api.Controllers
             var logs = await _db.VoterLogs
                 .AsNoTracking()
                 .Where(v => v.EventId == eventId && v.HasVoted)
-                .OrderBy(v => v.VotedAt)
+                // VotedAt has one-second precision, so voters who voted in the same second share a value. Without a tie-breaker the database
+                // returns those rows in no defined order (measured: not even a stable one, on the original schema as well as the new one),
+                // so two calls could list them differently. VoterLogId (first contact of the voter with the election) makes the list repeatable.
+                .OrderBy(v => v.VotedAt).ThenBy(v => v.VoterLogId)
                 .Select(v => new
                 {
                     v.VoterLogId,
@@ -474,77 +477,31 @@ namespace EVoting.Api.Controllers
         }
 
         // ── GET /api/v1/admin/voter-lookup ──────────────────────────────────────
+        /// <summary>
+        /// One page of the voters of an election, paged and filtered by the database (see VoterLookupService).
+        ///   page (1-based, default 1) · pageSize (default 50, at most 500 - a larger value is cut to 500; the answer says which was used)
+        ///   search (name, account code or this election's receipt code) · branchId · hasVoted (true / false)
+        /// Answer: page, pageSize, totalCount, totalPages, items. The older names total / data carry the same numbers and rows.
+        /// page or pageSize below 1 is a 400 VALIDATION error; a page past the end is a normal, empty page.
+        /// </summary>
         [HttpGet("voter-lookup")]
-        [RequirePermission(PermissionCodes.EventView)]
+        [RequirePermission(PermissionCodes.VoterLookupView, PermissionCodes.ReportView)]
         public async Task<IActionResult> VoterLookup(
+            [FromServices] IVoterLookupService lookup,
             [FromQuery] int eventId, [FromQuery] string? search,
             [FromQuery] int? branchId, [FromQuery] bool? hasVoted,
-            [FromQuery] int page = 1, [FromQuery] int pageSize = 100,
+            [FromQuery] int page = 1, [FromQuery] int pageSize = VoterLookupLimits.DefaultPageSize,
             CancellationToken ct = default)
         {
-            pageSize = Math.Clamp(pageSize, 1, 500);
-            var ev = await _db.Events.AsNoTracking()
-                .Include(e => e.EventBranches)
-                .FirstOrDefaultAsync(e => e.EventId == eventId, ct);
-            if (ev == null) return NotFound(new ApiError { Error = $"Event {eventId} not found." });
-
-            var branchIds = ev.EventBranches
-                .Select(eb => eb.BranchId).ToList();
-
-            //ano ang katumbas nito sa sql?
-            // SELECT * FROM VoterLogs WHERE EventId = @eventId
-            var logs = await _db.VoterLogs
-                .AsNoTracking()
-                .Where(v => v.EventId == eventId)
-                .ToListAsync(ct);
-            var logByMember = logs.ToDictionary(l => l.MemberId);
-            // BUG FIX: "voted" must mean the log row says HasVoted. A voter-log row can exist without a completed vote
-            // (HasVoted = false, receipt status "Pending"); the filter used to treat every ROW as a vote, so "voted only" listed
-            // members whose own HasVoted column said false and "not voted" hid them.
-            var votedIds = logs.Where(l => l.HasVoted).Select(l => l.MemberId).ToHashSet();
-
-            // SELECT * FROM Members WHERE IsActive = 1 AND IsEligibleToVote = 1 AND BranchId IN (@branchIds)
-            var memberQ = _db.Members
-                .AsNoTracking()
-                .Include(m => m.Branch)
-                .Where(m => m.IsActive && m.IsEligibleToVote && branchIds
-                .Contains(m.BranchId));
-
-            // Filter by branch if specified
-            if (branchId.HasValue) memberQ = memberQ.
-                    Where(m => m.BranchId == branchId.Value);
-
-            if (!string.IsNullOrWhiteSpace(search)) memberQ = memberQ.Where(m => m.MemberName.Contains(search) || m.AccountCode.Contains(search) || (_db.VoterLogs.Any(v => v.MemberId == m.MemberId && v.ReceiptCode != null && v.ReceiptCode.Contains(search))));
-
-            var members = await memberQ.OrderBy(m => m.MemberName).ThenBy(m => m.MemberId).ToListAsync(ct);   // tie-breaker: stable pages
-            var filtered = hasVoted.HasValue ? (hasVoted.Value ? members.Where(m => votedIds.Contains(m.MemberId)).ToList() : members.Where(m => !votedIds.Contains(m.MemberId)).ToList()) : members;
-
-            int total = filtered.Count;
-            var paged = filtered.Skip((page - 1) * pageSize).Take(pageSize).Select(m =>
-            {
-                var log = logByMember.GetValueOrDefault(m.MemberId);
-                return new
-                {
-                    m.MemberId,
-                    m.AccountCode,
-                    m.MemberName,
-                    Branch = m.Branch?.BranchName ?? "",
-                    m.BranchId,
-                    IsEligible = m.IsEligibleToVote,
-                    HasVoted = log?.HasVoted ?? false,
-                    // VoterLogs.VotedAt is written with DateTime.UtcNow: flag it so clients show it in local time.
-                    VotedAt = TimeConv.AsUtc(log?.VotedAt),
-                    ReceiptCode = log?.ReceiptCode ?? ""
-                };
-            }).ToList();
-
-            return Ok(new { eventId, total, page, pageSize, data = paged });
+            var r = await lookup.QueryAsync(eventId, search, branchId, hasVoted, page, pageSize, ct);
+            if (r.Ok) return Ok(r.Value);
+            return StatusCode(r.StatusCode, new ApiError { Error = r.Error ?? "The request failed.", Code = r.Code, Detail = r.Detail, Fields = r.Fields });
         }
 
 
         // ── GET /api/v1/admin/qr-issued ──────────────────────────────────────────
         [HttpGet("qr-issued")]
-        [RequirePermission(PermissionCodes.EventView)]
+        [RequirePermission(PermissionCodes.VoterLookupView, PermissionCodes.ReportView)]
         public async Task<IActionResult> QrIssued(
             [FromQuery] string? search, [FromQuery] int? branchId,
             [FromQuery] int page = 1, [FromQuery] int pageSize = 100,
@@ -590,9 +547,67 @@ namespace EVoting.Api.Controllers
 
 
 
+        // ── GET /api/v1/admin/events/{eventId}/voting-passes ─────────────────────
+        /// <summary>
+        /// Who received a voting pass (the Registration QR) FOR THIS ELECTION, paged; optional branch and name / account-code filter.
+        /// One row per member: the latest pass that is not revoked. Unlike <c>qr-issued</c> (Members.QrIssuedAt, overwritten at every
+        /// event) this is per event, so it only covers elections whose QR codes were printed after Registration began issuing passes.
+        /// </summary>
+        [HttpGet("events/{eventId:int}/voting-passes")]
+        [RequirePermission(PermissionCodes.VoterLookupView, PermissionCodes.ReportView)]
+        public async Task<IActionResult> VotingPassesIssued(
+            int eventId, [FromQuery] string? search, [FromQuery] int? branchId,
+            [FromQuery] int page = 1, [FromQuery] int pageSize = 100,
+            CancellationToken ct = default)
+        {
+            if (page < 1) page = 1;
+            pageSize = Math.Clamp(pageSize, 1, 500);
+            if (!await _db.Events.AsNoTracking().AnyAsync(e => e.EventId == eventId, ct))
+                return NotFound(new ApiError { Error = "Event not found.", Code = "NOT_FOUND" });
+
+            var passes = _db.VotingPasses.AsNoTracking().Where(p => p.EventId == eventId && p.RevokedAt == null);
+            var perMember = passes.GroupBy(p => p.MemberId)
+                                  .Select(g => new { MemberId = g.Key, IssuedAt = g.Max(p => p.IssuedAt) });
+
+            var q = from x in perMember
+                    join m in _db.Members.AsNoTracking() on x.MemberId equals m.MemberId
+                    select new { x.IssuedAt, Member = m };
+
+            if (branchId.HasValue) q = q.Where(r => r.Member.BranchId == branchId.Value);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var text = search.Trim();
+                q = q.Where(r => r.Member.MemberName.Contains(text) || r.Member.AccountCode.Contains(text));
+            }
+
+            int total = await q.CountAsync(ct);
+            var rows = await q
+                .OrderBy(r => r.Member.Branch!.BranchName).ThenBy(r => r.Member.MemberName).ThenBy(r => r.Member.MemberId)
+                .Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(r => new
+                {
+                    r.Member.MemberId,
+                    r.Member.AccountCode,
+                    r.Member.MemberName,
+                    Branch = r.Member.Branch != null ? r.Member.Branch.BranchName : "",
+                    r.Member.BranchId,
+                    IsEligible = r.Member.IsEligibleToVote,
+                    r.IssuedAt
+                })
+                .ToListAsync(ct);
+
+            // VotingPasses.IssuedAt is written with DateTime.UtcNow: flag it so clients show local time.
+            var data = rows.Select(x => new
+            {
+                x.MemberId, x.AccountCode, x.MemberName, x.Branch, x.BranchId, x.IsEligible,
+                QrIssuedAt = TimeConv.AsUtc(x.IssuedAt)
+            }).ToList();
+            return Ok(new { total, page, pageSize, data });
+        }
+
         // ── GET /api/v1/admin/turnout-by-branch/{eventId} ────────────────────────
         [HttpGet("turnout-by-branch/{eventId:int}")]
-        [RequirePermission(PermissionCodes.EventView)]
+        [RequirePermission(PermissionCodes.VoterLookupView, PermissionCodes.DashboardView, PermissionCodes.ReportView)]
         public async Task<IActionResult> TurnoutByBranch(int eventId, CancellationToken ct)
         {
             var ev = await _db.Events.AsNoTracking().Include(e => e.EventBranches)
@@ -648,7 +663,7 @@ namespace EVoting.Api.Controllers
         // ── GET /api/v1/admin/dashboard ───────────────────────────────────────
         /// <summary>Quick summary stats for the admin dashboard.</summary>
         [HttpGet("dashboard")]
-        [RequirePermission(PermissionCodes.EventView)]
+        [RequirePermission(PermissionCodes.DashboardView)]
         public async Task<IActionResult> Dashboard(CancellationToken ct)
         {
             // Fetch the current event first (needed for the totalVoted query below)

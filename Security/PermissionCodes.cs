@@ -42,5 +42,15 @@ namespace EVoting.Api.Security
         public const string CandidateDelete = "CANDIDATE_DELETE";
 
         public const string AuditView = "AUDIT_VIEW";
+
+        // Settings > Member Eligibility (system-wide voting-eligibility thresholds). Seeded by migration 20261104140000_AddRepresentativeElection
+        // and granted to RoleId 1 (the built-in super administrator); every other role must be granted them explicitly on the Roles screen.
+        public const string SettingsEligibilityView = "SETTINGS_ELIGIBILITY_VIEW";
+        public const string SettingsEligibilityEdit = "SETTINGS_ELIGIBILITY_EDIT";
+
+        /// <summary>Screens that used to ride on EVENT_VIEW (2026-11-17): each now has its own permission.</summary>
+        public const string DashboardView = "DASHBOARD_VIEW";
+        public const string ResultsView = "RESULTS_VIEW";
+        public const string VoterLookupView = "VOTER_LOOKUP_VIEW";
     }
 }

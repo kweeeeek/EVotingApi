@@ -1,4 +1,6 @@
 using EVoting.Api.Infrastructure;
+using EVoting.Api.Infrastructure.Entities;
+using EVoting.Api.Services;
 using EVoting.Api.Models.Responses;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -159,6 +161,80 @@ namespace EVoting.Api.Controllers
             {
                 SucceededMemberIds = succeeded,
                 FailedMemberIds = failed
+            });
+        }
+
+        // ── POST /api/v1/registration/members/{id}/voting-pass ─────────────────
+        /// <summary>
+        /// Issues the member's VOTING PASS for the election that is open now and returns it once, to be printed in the QR code of
+        /// the Registration slip. The account code stays the member's identity; the pass proves the slip came from this desk.
+        /// <list type="bullet">
+        /// <item>Same checks the kiosk makes: an open election, the member active, eligible, in a participating branch, not yet voted.</item>
+        /// <item>A pass issued earlier to the same member for the same election is revoked (a lost or reprinted slip: only the newest works).</item>
+        /// <item>Only the SHA-256 of the pass is stored; the pass itself is never logged or audited.</item>
+        /// <item>Also stamps QrIssuedAt, so this call replaces <c>qr-issued</c> for a station that uses passes.</item>
+        /// </list>
+        /// </summary>
+        [HttpPost("members/{id:int}/voting-pass")]
+        public async Task<IActionResult> IssueVotingPass(int id, [FromServices] IAuditService audit, CancellationToken ct)
+        {
+            var ev = await _db.Events.AsNoTracking().Include(e => e.EventBranches)
+                .FirstOrDefaultAsync(e => e.Status == "Opened" && e.IsActive, ct);
+            if (ev == null)
+                return Conflict(new ApiError { Error = "No election event is currently open.", Code = "NO_OPEN_EVENT" });
+
+            var member = await _db.Members.Include(m => m.Branch).FirstOrDefaultAsync(m => m.MemberId == id && m.IsActive, ct);
+            if (member == null)
+                return NotFound(new ApiError { Error = "Member not found.", Code = "MEMBER_NOT_FOUND" });
+            if (!member.IsEligibleToVote)
+                return UnprocessableEntity(new ApiError { Error = "Member is not eligible to vote.", Detail = member.VotingRemarks, Code = "NOT_ELIGIBLE" });
+            if (!ev.EventBranches.Any(eb => eb.BranchId == member.BranchId))
+                return StatusCode(403, new ApiError
+                {
+                    Error = "Branch not assigned to this election.",
+                    Detail = $"Branch '{member.Branch?.BranchName}' is not participating in this event.",
+                    Code = "BRANCH_NOT_PARTICIPATING"
+                });
+            if (await _db.VoterLogs.AnyAsync(v => v.MemberId == id && v.EventId == ev.EventId && v.HasVoted, ct))
+                return Conflict(new ApiError { Error = "Member has already voted in this election.", Code = "ALREADY_VOTED" });
+
+            var now = DateTime.UtcNow;
+            var issuer = User.FindFirst("stationId")?.Value is { Length: > 0 } st ? $"station:{st}" : (User.Identity?.Name ?? "registration");
+            if (issuer.Length > 60) issuer = issuer.Substring(0, 60);
+
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+            // Revoke what this member already holds for this election: only the newest slip works.
+            int revoked = await _db.VotingPasses
+                .Where(p => p.EventId == ev.EventId && p.MemberId == id && p.RevokedAt == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.RevokedAt, now), ct);
+
+            var pass = VotingPass.Generate();
+            _db.VotingPasses.Add(new VotingPassEntity
+            {
+                EventId = ev.EventId,
+                MemberId = id,
+                PassHash = VotingPass.Hash(pass),
+                IssuedAt = now,
+                IssuedBy = issuer,
+            });
+            member.QrIssuedAt = now;
+
+            audit.Stage(AuditActions.IssueVotingPass, AuditEntities.Member, id,
+                $"EventId={ev.EventId}, IssuedBy='{issuer}'" + (revoked > 0 ? $", revoked {revoked} earlier pass(es)." : "."));
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+
+            _logger.LogInformation("Voting pass issued: MemberId={MemberId} EventId={EventId} By={Issuer} Revoked={Revoked}",
+                id, ev.EventId, issuer, revoked);
+
+            return Ok(new VotingPassResponse
+            {
+                MemberId = id,
+                EventId = ev.EventId,
+                VotingPass = pass,
+                QrIssuedAt = now,
+                RevokedEarlier = revoked
             });
         }
 
