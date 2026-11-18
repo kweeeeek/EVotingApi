@@ -1,5 +1,6 @@
 using EVoting.Api.Infrastructure;
 using EVoting.Api.Infrastructure.Entities;
+using EVoting.Api.Models.Responses;
 using EVoting.Api.Security;
 using EVoting.Api.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -49,6 +50,79 @@ namespace EVoting.Api.Controllers
             public int EligibleCount { get; set; }
             public int CandidateCount { get; set; }
             public int VotedCount { get; set; }
+        }
+
+        public sealed class RegistrationPackageResponse
+        {
+            public string FileName { get; set; } = "";
+            public string FileContent { get; set; } = "";
+            /// <summary>Shown ONCE to the administrator: it is needed on every desk to import the file, and is not stored anywhere.</summary>
+            public string Passphrase { get; set; } = "";
+            public string ExportId { get; set; } = "";
+            public string FileSha256 { get; set; } = "";
+            public DateTime CreatedAtUtc { get; set; }
+            public int EventId { get; set; }
+            public string EventTitle { get; set; } = "";
+            public DateTime ScheduleFrom { get; set; }
+            public DateTime ScheduleTo { get; set; }
+            public int MemberCount { get; set; }
+            public int BranchCount { get; set; }
+        }
+
+        /// <summary>
+        /// The Registration package (.evreg) of a General Assembly election: its participating branches' active members, exactly as
+        /// GET registration/members/roster serves them, plus the election as GET events/current serves it. For Registration desks at a
+        /// venue with no signal, when the election is not open yet while the desks are prepared (an open election can be prepared online
+        /// from the desk itself). Protected with a one-time passphrase returned here, because a browser cannot hold the kiosk secret.
+        /// Same permission as the kiosk package: it holds the personal data of the members of those branches.
+        /// </summary>
+        [HttpPost("{eventId:int}/registration")]
+        [RequirePermission(PermissionCodes.OfflinePackageExport)]
+        public async Task<IActionResult> CreateRegistration(int eventId, CancellationToken ct)
+        {
+            var ev = await _db.Events.AsNoTracking().Include(e => e.EventBranches).ThenInclude(b => b.Branch)
+                .FirstOrDefaultAsync(e => e.EventId == eventId && e.IsActive, ct);
+            if (ev == null) return NotFoundError("Active election");
+            if (ev.EventType != EventTypes.GeneralAssembly)
+                return Fail(StatusCodes.Status409Conflict, "Registration packages are for General Assembly elections only.", "WRONG_EVENT_TYPE");
+
+            var branchIds = ev.EventBranches.Select(b => b.BranchId).Distinct().ToList();
+            if (branchIds.Count == 0)
+                return Fail(StatusCodes.Status409Conflict, "This election has no participating branches yet.", "NO_BRANCHES");
+
+            // same rows as RegistrationController.GetMembersRoster
+            var members = await _db.Members.AsNoTracking().Include(m => m.Branch)
+                .Where(m => m.IsActive && branchIds.Contains(m.BranchId))
+                .OrderBy(m => m.MemberName)
+                .ToListAsync(ct);
+
+            var payload = new RegistrationPackageFile.Payload
+            {
+                Event = EventsController.MapEvent(ev),
+                Members = members.Select(RegistrationController.MapMember).ToList()
+            };
+            var now = DateTime.UtcNow;
+            var written = RegistrationPackageFile.Write(payload, now);
+
+            await _audit.WriteAsync(AuditActions.OfflinePackageExported, AuditEntities.Event, ev.EventId,
+                $"Kind=Registration; ExportId={written.ExportId}; FileSha256={written.Sha256}; Members={members.Count}; Branches={branchIds.Count}", ct: ct);
+            _logger.LogInformation("Registration package made: EventId={EventId} Export={Export} Members={Members}", ev.EventId, written.ExportId, members.Count);
+
+            return Ok(new RegistrationPackageResponse
+            {
+                FileName = $"EVENT{ev.EventId}_REGISTRATION_{DateTime.Now:yyyyMMdd-HHmm}{RegistrationPackageFile.FileExtension}",
+                FileContent = written.Text,
+                Passphrase = written.Passphrase,
+                ExportId = written.ExportId,
+                FileSha256 = written.Sha256,
+                CreatedAtUtc = now,
+                EventId = ev.EventId,
+                EventTitle = ev.Title,
+                ScheduleFrom = ev.ScheduleFrom,
+                ScheduleTo = ev.ScheduleTo,
+                MemberCount = members.Count,
+                BranchCount = branchIds.Count
+            });
         }
 
         [HttpPost("{eventId:int}")]

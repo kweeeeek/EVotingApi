@@ -408,7 +408,7 @@ namespace EVoting.Api.Controllers
             catch { /* Redis write failure is non-fatal */ }
         }
 
-        private static EventResponse MapEvent(Infrastructure.Entities.EventEntity e) => new()
+        internal static EventResponse MapEvent(Infrastructure.Entities.EventEntity e) => new()
         {
             EventId = e.EventId,
             Title = e.Title,
