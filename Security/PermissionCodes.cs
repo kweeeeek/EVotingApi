@@ -55,5 +55,8 @@ namespace EVoting.Api.Security
 
         /// <summary>Import a kiosk vote file carried on USB (2026-11-18, deploy/sql/009). RoleId 1 only until granted on the Roles screen.</summary>
         public const string OfflineVoteImport = "OFFLINE_VOTE_IMPORT";
+
+        /// <summary>Make the kiosk package (.evpkg: roster, candidates, rules) for a venue with no signal (2026-11-18, deploy/sql/010). RoleId 1 only until granted.</summary>
+        public const string OfflinePackageExport = "OFFLINE_PACKAGE_EXPORT";
     }
 }

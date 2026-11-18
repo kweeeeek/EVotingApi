@@ -1,6 +1,6 @@
 -- check_permissions.sql  (READ-ONLY: walang binabago)
 -- Patakbuhin sa LIVE database sa Workbench. Tatlong resulta ang lalabas.
--- Ang 34 code sa ibaba ay ang mismong listahan sa EVoting.Api/Security/PermissionCodes.cs
+-- Ang 35 code sa ibaba ay ang mismong listahan sa EVoting.Api/Security/PermissionCodes.cs
 -- (pareho rin sa Admin app at sa DefaultDatabase.sql).
 
 DROP TEMPORARY TABLE IF EXISTS tmp_expected_permissions;
@@ -18,7 +18,8 @@ INSERT INTO tmp_expected_permissions VALUES
  ('SETTINGS_ELIGIBILITY_VIEW','View Member Eligibility Settings'),('SETTINGS_ELIGIBILITY_EDIT','Edit Member Eligibility Settings'),
  -- bago (008): sariling permission ng Dashboard, Results at Voters Lookup
  ('DASHBOARD_VIEW','View Live Dashboard'),('RESULTS_VIEW','View Election Results'),('VOTER_LOOKUP_VIEW','View Voter Lookup'),
- ('OFFLINE_VOTE_IMPORT','Import Kiosk Votes from USB');
+ ('OFFLINE_VOTE_IMPORT','Import Kiosk Votes from USB'),
+ ('OFFLINE_PACKAGE_EXPORT','Make Kiosk USB Package');
 
 -- 1) KULANG sa database (kailangan ng code pero wala sa Permissions table)
 SELECT e.Code AS kulang_na_permission, e.Name
