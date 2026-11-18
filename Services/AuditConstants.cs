@@ -42,6 +42,7 @@ namespace EVoting.Api.Services
         public const string RepOfflineSynced = "REP_OFFLINE_SYNCED";
         /// <summary>A voting pass (Registration QR) was issued; Details never carry the pass itself.</summary>
         public const string IssueVotingPass = "ISSUE_VOTING_PASS";
+        public const string OfflineVotesImported = "OFFLINE_VOTES_IMPORTED";
 
         public static readonly string[] All =
         {
@@ -69,6 +70,7 @@ namespace EVoting.Api.Services
         public const string RepresentativeRoster = "RepresentativeRoster";
         public const string RepresentativeImport = "RepresentativeImport";
         public const string Settings = "Settings";
+        public const string OfflineVoteImport = "OfflineVoteImport";
     }
 
     /// <summary>Pure helpers for building AuditLogs rows (no HTTP, no EF queries) — safe to use from background services.</summary>

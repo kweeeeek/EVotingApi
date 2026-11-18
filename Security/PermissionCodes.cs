@@ -52,5 +52,8 @@ namespace EVoting.Api.Security
         public const string DashboardView = "DASHBOARD_VIEW";
         public const string ResultsView = "RESULTS_VIEW";
         public const string VoterLookupView = "VOTER_LOOKUP_VIEW";
+
+        /// <summary>Import a kiosk vote file carried on USB (2026-11-18, deploy/sql/009). RoleId 1 only until granted on the Roles screen.</summary>
+        public const string OfflineVoteImport = "OFFLINE_VOTE_IMPORT";
     }
 }
