@@ -44,6 +44,9 @@ namespace EVoting.Api.Infrastructure
         // ── Voting passes (random token in the Registration QR; see VotingPassEntity) ──
         public DbSet<VotingPassEntity> VotingPasses { get; set; }
 
+        // ── Registration QR slips per election (deploy/sql/011; see QrIssuanceEntity) ──
+        public DbSet<QrIssuanceEntity> QrIssuances { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -102,6 +105,21 @@ namespace EVoting.Api.Infrastructure
                     .HasConstraintName("FK_VotingPasses_Events").OnDelete(DeleteBehavior.Restrict);
                 p.HasOne<MemberEntity>().WithMany().HasForeignKey(x => x.MemberId)
                     .HasConstraintName("FK_VotingPasses_Members").OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── QR issuances per election ────────────────────────────
+            modelBuilder.Entity<QrIssuanceEntity>(q =>
+            {
+                q.ToTable("QrIssuances");
+                q.Property(x => x.IssuedBy).HasMaxLength(60).IsRequired();
+                q.Property(x => x.IssuedAtUtc).HasColumnType("datetime(6)");
+                q.Property(x => x.RecordedAtUtc).HasColumnType("datetime(6)");
+                q.HasIndex(x => new { x.EventId, x.MemberId }).HasDatabaseName("IX_QrIssuances_Event_Member");
+                q.HasIndex(x => new { x.EventId, x.DeskNo, x.IssuedAtUtc }).HasDatabaseName("IX_QrIssuances_Event_Desk_Time");
+                q.HasOne<EventEntity>().WithMany().HasForeignKey(x => x.EventId)
+                    .HasConstraintName("FK_QrIssuances_Events").OnDelete(DeleteBehavior.Cascade);
+                q.HasOne<MemberEntity>().WithMany().HasForeignKey(x => x.MemberId)
+                    .HasConstraintName("FK_QrIssuances_Members").OnDelete(DeleteBehavior.Cascade);
             });
 
             // ── Relationships ────────────────────────────────────────

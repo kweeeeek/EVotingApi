@@ -605,6 +605,69 @@ namespace EVoting.Api.Controllers
             return Ok(new { total, page, pageSize, data });
         }
 
+        // ── GET /api/v1/admin/events/{eventId}/qr-issuances ──────────────────────
+        /// <summary>
+        /// Who received a Registration QR FOR THIS ELECTION (table QrIssuances), paged; one row per member with the LATEST slip
+        /// (desk, user, online/offline) and how many slips the member received in this election. Filters: branch, desk, name /
+        /// account code. Covers every slip recorded from 2026-11-19 on (also voting passes); older elections have no rows.
+        /// </summary>
+        [HttpGet("events/{eventId:int}/qr-issuances")]
+        [RequirePermission(PermissionCodes.VoterLookupView, PermissionCodes.ReportView)]
+        public async Task<IActionResult> QrIssuancesForEvent(
+            int eventId, [FromQuery] string? search, [FromQuery] int? branchId, [FromQuery] int? deskNo,
+            [FromQuery] int page = 1, [FromQuery] int pageSize = 100,
+            CancellationToken ct = default)
+        {
+            if (page < 1) page = 1;
+            pageSize = Math.Clamp(pageSize, 1, 500);
+            if (!await _db.Events.AsNoTracking().AnyAsync(e => e.EventId == eventId, ct))
+                return NotFound(new ApiError { Error = "Event not found.", Code = "NOT_FOUND" });
+
+            // latest slip per member in this election (by time, then id)
+            var all = _db.QrIssuances.AsNoTracking().Where(i => i.EventId == eventId);
+            var latestIds = all.GroupBy(i => i.MemberId).Select(g => g.Max(i => i.QrIssuanceId));
+            var latest = all.Where(i => latestIds.Contains(i.QrIssuanceId));
+            if (deskNo.HasValue) latest = latest.Where(i => i.DeskNo == deskNo.Value);
+
+            var q = from i in latest
+                    join m in _db.Members.AsNoTracking() on i.MemberId equals m.MemberId
+                    select new { I = i, Member = m };
+            if (branchId.HasValue) q = q.Where(r => r.Member.BranchId == branchId.Value);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var text = search.Trim();
+                q = q.Where(r => r.Member.MemberName.Contains(text) || r.Member.AccountCode.Contains(text));
+            }
+
+            int total = await q.CountAsync(ct);
+            var rows = await q
+                .OrderByDescending(r => r.I.IssuedAtUtc).ThenByDescending(r => r.I.QrIssuanceId)
+                .Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(r => new
+                {
+                    r.Member.MemberId,
+                    r.Member.AccountCode,
+                    r.Member.MemberName,
+                    Branch = r.Member.Branch != null ? r.Member.Branch.BranchName : "",
+                    r.Member.BranchId,
+                    IsEligible = r.Member.IsEligibleToVote,
+                    r.I.IssuedAtUtc,
+                    r.I.DeskNo,
+                    r.I.IssuedBy,
+                    r.I.Offline,
+                    SlipCount = all.Count(x => x.MemberId == r.Member.MemberId)
+                })
+                .ToListAsync(ct);
+
+            var data = rows.Select(x => new
+            {
+                x.MemberId, x.AccountCode, x.MemberName, x.Branch, x.BranchId, x.IsEligible,
+                QrIssuedAt = TimeConv.AsUtc(x.IssuedAtUtc),
+                x.DeskNo, x.IssuedBy, x.Offline, x.SlipCount
+            }).ToList();
+            return Ok(new { total, page, pageSize, data });
+        }
+
         // ── GET /api/v1/admin/turnout-by-branch/{eventId} ────────────────────────
         [HttpGet("turnout-by-branch/{eventId:int}")]
         [RequirePermission(PermissionCodes.VoterLookupView, PermissionCodes.DashboardView, PermissionCodes.ReportView)]

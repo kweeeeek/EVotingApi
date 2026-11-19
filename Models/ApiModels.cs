@@ -307,6 +307,44 @@ namespace EVoting.Api.Models.Responses
         public int MemberId { get; set; }
         /// <summary>When the QR was actually generated on the station — not when this sync request happens to arrive.</summary>
         public DateTime IssuedAtUtc { get; set; }
+        /// <summary>The election the desk was working for (null from an older page: the server picks the election by time).</summary>
+        public int? EventId { get; set; }
+        /// <summary>Desk 1-30 chosen at sign-in (null from an older page).</summary>
+        public int? DeskNo { get; set; }
+        /// <summary>User name of whoever issued it on the desk PC (the sender may be another user of that PC).</summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(50)] public string? IssuedBy { get; set; }
+    }
+
+    /// <summary>Optional body of POST registration/members/{id}/qr-issued and /voting-pass.</summary>
+    public class QrIssueRequest
+    {
+        /// <summary>The election the page shows; must be the open one.</summary>
+        public int? EventId { get; set; }
+        /// <summary>Registration desk 1-30 chosen at sign-in.</summary>
+        public int? DeskNo { get; set; }
+    }
+
+    /// <summary>Answer of GET registration/qr-issuances: what one desk issued in one election, newest first.</summary>
+    public class DeskIssuancesResponse
+    {
+        public int EventId { get; set; }
+        public int DeskNo { get; set; }
+        /// <summary>All slips of this desk in this election (a reprint counts again).</summary>
+        public int Total { get; set; }
+        /// <summary>Different members among them.</summary>
+        public int MemberCount { get; set; }
+        public List<DeskIssuanceRow> Items { get; set; } = new();
+    }
+
+    public class DeskIssuanceRow
+    {
+        public int MemberId { get; set; }
+        public string AccountCode { get; set; } = "";
+        public string MemberName { get; set; } = "";
+        public string Branch { get; set; } = "";
+        public DateTime IssuedAtUtc { get; set; }
+        public string IssuedBy { get; set; } = "";
+        public bool Offline { get; set; }
     }
 
     /// <summary>Answer of POST registration/members/{id}/voting-pass. VotingPass is shown ONCE: print it in the QR, do not store it.</summary>
