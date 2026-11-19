@@ -42,6 +42,7 @@ namespace EVoting.Api.Services
         public const string RepOfflineSynced = "REP_OFFLINE_SYNCED";
         /// <summary>A voting pass (Registration QR) was issued; Details never carry the pass itself.</summary>
         public const string IssueVotingPass = "ISSUE_VOTING_PASS";
+        public const string PasswordChanged = "PASSWORD_CHANGED";
         public const string OfflineVotesImported = "OFFLINE_VOTES_IMPORTED";
         public const string OfflinePackageExported = "OFFLINE_PACKAGE_EXPORTED";
 

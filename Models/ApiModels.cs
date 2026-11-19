@@ -143,6 +143,18 @@ namespace EVoting.Api.Models.Responses
         public string TokenType { get; set; } = "Bearer";
         public int ExpiresIn { get; set; }
         public string Role { get; set; } = "";
+        /// <summary>
+        /// Registration sign-in only: the password was given by an administrator and must be changed first. AccessToken is then a
+        /// short "PasswordChange" token that can do nothing but POST auth/registration-change-password.
+        /// </summary>
+        public bool MustChangePassword { get; set; }
+    }
+
+    /// <summary>Body of POST auth/registration-change-password.</summary>
+    public class ChangePasswordRequest
+    {
+        [Required, MaxLength(128)] public string CurrentPassword { get; set; } = "";
+        [Required, MaxLength(128)] public string NewPassword { get; set; } = "";
     }
 
     public class VoterVerifyResponse

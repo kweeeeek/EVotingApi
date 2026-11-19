@@ -22,6 +22,11 @@ namespace EVoting.Api.Infrastructure.Entities
         public DateTime UpdatedAt { get; set; }
         public DateTime? DeletedAt { get; set; }
         public bool IsActive { get; set; }
+        /// <summary>
+        /// Set when an administrator gives the account a password (new user, reset): the Registration sign-in then only lets the person
+        /// choose their own password before the desk opens (deploy/sql/012). The Admin sign-in does not look at it.
+        /// </summary>
+        public bool MustChangePassword { get; set; }
 
         [ForeignKey("BranchId")] public virtual BranchEntity? Branch { get; set; }
         [ForeignKey("RoleId")] public virtual RoleEntity? Role { get; set; }

@@ -67,6 +67,8 @@ namespace EVoting.Api.Models.Admin
         public int? RoleId { get; set; }
         public string RoleName { get; set; } = "";
         public bool HasPhoto { get; set; }
+        /// <summary>The person must choose a new password at the next Registration sign-in.</summary>
+        public bool MustChangePassword { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }
@@ -83,6 +85,12 @@ namespace EVoting.Api.Models.Admin
 
         /// <summary>Required on create. On update: blank/null keeps the current password.</summary>
         public string? Password { get; set; }
+
+        /// <summary>
+        /// "Must change the password at the next Registration sign-in". Null: on when a password is given (create / reset), unchanged
+        /// otherwise. True/false: set it so.
+        /// </summary>
+        public bool? MustChangePassword { get; set; }
 
         [Range(1, int.MaxValue, ErrorMessage = "Branch is required.")] public int BranchId { get; set; }
         [Range(1, int.MaxValue, ErrorMessage = "Role is required.")] public int RoleId { get; set; }
