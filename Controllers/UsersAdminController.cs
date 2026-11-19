@@ -86,6 +86,7 @@ namespace EVoting.Api.Controllers
                 RoleId = u.RoleId,
                 RoleName = u.Role != null ? u.Role.RoleName : "",
                 HasPhoto = u.UserImage != null && u.UserImage.Length > 0,
+                MustChangePassword = u.MustChangePassword,
                 CreatedAt = u.CreatedAt,
                 UpdatedAt = u.UpdatedAt
             });
@@ -167,6 +168,7 @@ namespace EVoting.Api.Controllers
                 Email = req.Email.Trim(),
                 Username = req.Username.Trim(),
                 PasswordHash = _pw.Hash(req.Password!),
+                MustChangePassword = req.MustChangePassword ?? true,   // the administrator chose it: the person picks their own
                 BranchId = req.BranchId,
                 RoleId = req.RoleId,
                 // Users.UserImage is "longblob NOT NULL": "no photo" is stored as an empty array, never NULL.
@@ -180,7 +182,8 @@ namespace EVoting.Api.Controllers
             _db.Users.Add(user);
             await _db.SaveChangesAsync(ct);                       // need the identity value for the audit row
             _audit.Stage(AuditActions.Create, AuditEntities.User, user.Id,
-                $"Username='{user.Username}', Name='{NameOf(user)}', BranchId={user.BranchId}, RoleId={user.RoleId}.");
+                $"Username='{user.Username}', Name='{NameOf(user)}', BranchId={user.BranchId}, RoleId={user.RoleId}." +
+            (user.MustChangePassword ? " MUST CHANGE PASSWORD" : ""));
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
@@ -226,6 +229,9 @@ namespace EVoting.Api.Controllers
             user.BranchId = req.BranchId;
             user.RoleId = req.RoleId;
             if (passwordReset) user.PasswordHash = _pw.Hash(req.Password!);
+            bool mustChangeBefore = user.MustChangePassword;
+            if (req.MustChangePassword.HasValue) user.MustChangePassword = req.MustChangePassword.Value;
+            else if (passwordReset) user.MustChangePassword = true;   // a reset password is the administrator's: changed at next sign-in
             // "longblob NOT NULL" column: removing the photo stores an empty array, never NULL.
             if (req.RemovePhoto) user.UserImage = Array.Empty<byte>();
             else if (photo != null) user.UserImage = photo;
@@ -233,7 +239,8 @@ namespace EVoting.Api.Controllers
 
             _audit.Stage(AuditActions.Update, AuditEntities.User, user.Id,
                 $"Username='{user.Username}', Name='{NameOf(user)}', BranchId={user.BranchId}, RoleId={user.RoleId}." +
-                (passwordReset ? " PASSWORD RESET" : "") + (roleChanged ? " ROLE CHANGED" : ""));
+                (passwordReset ? " PASSWORD RESET" : "") + (roleChanged ? " ROLE CHANGED" : "") +
+                (user.MustChangePassword != mustChangeBefore ? (user.MustChangePassword ? " MUST CHANGE PASSWORD" : " MUST-CHANGE CLEARED") : ""));
             await _db.SaveChangesAsync(ct);
 
             _perms.Invalidate();   // role/branch change must take effect immediately
@@ -331,6 +338,7 @@ namespace EVoting.Api.Controllers
                     // Same as the legacy importer: a random temporary password nobody knows, so an administrator
                     // must reset it before the account's first login.
                     PasswordHash = _pw.Hash(_pw.GenerateTemporaryPassword()),
+                    MustChangePassword = true,
                     UserImage = Array.Empty<byte>(),      // "longblob NOT NULL": imported users have no photo
                     BranchId = branchId,
                     RoleId = roleId,

@@ -16,6 +16,11 @@ namespace EVoting.Api.Services
         /// never satisfy a [RequirePermission] check, which keeps it strictly least-privilege.
         /// </summary>
         string GenerateRegistrationStationToken(string stationId);
+        /// <summary>
+        /// A short token (PasswordChangeTokenMinutes) for a Registration user whose password must be changed first: role
+        /// "PasswordChange", no permission claims, no session, so it reaches nothing but auth/registration-change-password.
+        /// </summary>
+        string GeneratePasswordChangeToken(UserEntity user);
         string GenerateKioskToken(string kioskId);
         string GenerateVoterToken(int memberId, int eventId, string memberName);
     }
@@ -93,6 +98,20 @@ namespace EVoting.Api.Services
                 regExpiry = 480;
 
             return BuildToken(claims, regExpiry);
+        }
+
+        public const int PasswordChangeTokenMinutes = 10;
+
+        public string GeneratePasswordChangeToken(UserEntity user)
+        {
+            var claims = new List<Claim>
+            {
+                new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+                new(ClaimTypes.Name,           user.Username),
+                new(ClaimTypes.Role,           "PasswordChange"),
+                new("fullName",                user.FullName),
+            };
+            return BuildToken(claims, PasswordChangeTokenMinutes);
         }
 
         // Token for a non-interactive Registration Station (see ITokenService). NameIdentifier is deliberately NOT numeric:

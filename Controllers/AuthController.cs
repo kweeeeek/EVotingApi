@@ -209,22 +209,86 @@ namespace EVoting.Api.Controllers
                 return Unauthorized(new ApiError { Error = "Invalid username or password." });
             }
 
+            // A password the administrator gave (new account, reset): the person must choose their own before the desk opens.
+            // The answer carries only a short PasswordChange token; no Registration session is started yet.
+            if (user!.MustChangePassword)
+            {
+                _logger.LogInformation("Registration login needs a new password: UserId={Id} Username={Username}", user.Id, user.Username);
+                return Ok(new TokenResponse
+                {
+                    AccessToken = _tokens.GeneratePasswordChangeToken(user),
+                    ExpiresIn = TokenService.PasswordChangeTokenMinutes * 60,
+                    Role = "PasswordChange",
+                    MustChangePassword = true
+                });
+            }
+
+            return Ok(await StartRegistrationSessionAsync(user, ct));
+        }
+
+        /// <summary>Starts the account's only Registration session (single session) and returns its token.</summary>
+        private async Task<TokenResponse> StartRegistrationSessionAsync(Infrastructure.Entities.UserEntity user, CancellationToken ct)
+        {
             if (!int.TryParse(_config["Jwt:AdminTokenExpiryMinutes"], out int expiry))
                 expiry = 480;
 
             // Single session: this sign-in becomes the account's only valid Registration session.
-            var (sessionId, replaced) = await _sessions.StartAsync(user!.Id, SessionRegistry.AppRegistration, TimeSpan.FromMinutes(expiry), ct);
-            var token = _tokens.GenerateRegistrationToken(user!, sessionId);
+            var (sessionId, replaced) = await _sessions.StartAsync(user.Id, SessionRegistry.AppRegistration, TimeSpan.FromMinutes(expiry), ct);
+            var token = _tokens.GenerateRegistrationToken(user, sessionId);
 
             _logger.LogInformation("Registration-station login: UserId={Id} Username={Username} ReplacedSession={Replaced}",
-                user!.Id, user.Username, replaced);
+                user.Id, user.Username, replaced);
 
-            return Ok(new TokenResponse
+            return new TokenResponse
             {
                 AccessToken = token,
                 ExpiresIn = expiry * 60,
                 Role = "Registration"
-            });
+            };
+        }
+
+        // ── POST /api/v1/auth/registration-change-password ─────────────────────
+        /// <summary>
+        /// The person chooses their own password after the Registration sign-in answered MustChangePassword. Called with the short
+        /// PasswordChange token; the current (administrator's) password is asked again. The new one must meet the password policy
+        /// and differ from the current one. On success the flag is cleared and the normal Registration session starts (same answer
+        /// as registration-login), so the desk opens at once.
+        /// </summary>
+        [HttpPost("registration-change-password")]
+        [Authorize(Roles = "PasswordChange")]
+        [EnableRateLimiting("registration-login")]
+        public async Task<IActionResult> RegistrationChangePassword(
+            [FromBody] ChangePasswordRequest req, [FromServices] IAuditService audit, CancellationToken ct)
+        {
+            if (!int.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var userId))
+                return Unauthorized(new ApiError { Error = "Sign in again.", Code = "SIGN_IN_AGAIN" });
+
+            var user = await _db.Users
+                .Include(u => u.Role)
+                    .ThenInclude(r => r!.RolePermissions)
+                        .ThenInclude(rp => rp.Permission)
+                .Include(u => u.Branch)
+                .FirstOrDefaultAsync(u => u.Id == userId && u.IsActive, ct);
+            if (user == null)
+                return Unauthorized(new ApiError { Error = "Sign in again.", Code = "SIGN_IN_AGAIN" });
+
+            if (!_passwords.Verify(req.CurrentPassword, user.PasswordHash))
+                return BadRequest(new ApiError { Error = "The current password is wrong. Sign in again.", Code = "WRONG_PASSWORD" });
+            if (!PasswordPolicy.IsAcceptable(req.NewPassword))
+                return BadRequest(new ApiError { Error = PasswordPolicy.Requirement, Code = "WEAK_PASSWORD" });
+            if (req.NewPassword == req.CurrentPassword)
+                return BadRequest(new ApiError { Error = "Choose a password different from the one you were given.", Code = "SAME_PASSWORD" });
+            if (req.NewPassword.Contains(user.Username, StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new ApiError { Error = "The password must not contain your user name.", Code = "WEAK_PASSWORD" });
+
+            user.PasswordHash = _passwords.Hash(req.NewPassword);
+            user.MustChangePassword = false;
+            user.UpdatedAt = DateTime.Now;
+            audit.Stage(AuditActions.PasswordChanged, AuditEntities.User, user.Id, $"Username='{user.Username}' chose a new password at the Registration sign-in.");
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation("Registration user changed the password: UserId={Id} Username={Username}", user.Id, user.Username);
+            return Ok(await StartRegistrationSessionAsync(user, ct));
         }
 
         // ── POST /api/v1/auth/registration-station-login ──────────────────────
