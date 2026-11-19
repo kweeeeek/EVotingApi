@@ -240,7 +240,7 @@ namespace EVoting.Api.Controllers
 
         // ── Private helpers ─────────────────────────────────────────────────────
 
-        private static RegistrationMemberResponse MapMember(
+        internal static RegistrationMemberResponse MapMember(
             Infrastructure.Entities.MemberEntity m) => new()
         {
             MemberId            = m.MemberId,
