@@ -83,9 +83,7 @@ namespace EVoting.Api.Controllers
             var ev = await _db.Events.AsNoTracking().Include(e => e.EventBranches).ThenInclude(b => b.Branch)
                 .FirstOrDefaultAsync(e => e.EventId == eventId && e.IsActive, ct);
             if (ev == null) return NotFoundError("Active election");
-            if (ev.EventType != EventTypes.GeneralAssembly)
-                return Fail(StatusCodes.Status409Conflict, "Registration packages are for General Assembly elections only.", "WRONG_EVENT_TYPE");
-
+            // Both election types: the Registration desk is used at the Representative Assembly and at the General Assembly.
             var branchIds = ev.EventBranches.Select(b => b.BranchId).Distinct().ToList();
             if (branchIds.Count == 0)
                 return Fail(StatusCodes.Status409Conflict, "This election has no participating branches yet.", "NO_BRANCHES");
@@ -96,10 +94,12 @@ namespace EVoting.Api.Controllers
                 .OrderBy(m => m.MemberName)
                 .ToListAsync(ct);
 
+            var qrThisElection = await RegistrationController.QrIssuedPerEventAsync(_db, eventId, null, ct);
+
             var payload = new RegistrationPackageFile.Payload
             {
                 Event = EventsController.MapEvent(ev),
-                Members = members.Select(RegistrationController.MapMember).ToList()
+                Members = members.Select(m => RegistrationController.MapMember(m, qrThisElection)).ToList()
             };
             var now = DateTime.UtcNow;
             var written = RegistrationPackageFile.Write(payload, now);
