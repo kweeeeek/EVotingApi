@@ -81,9 +81,20 @@ namespace EVoting.Api.Controllers
                     a.Action == AuditActions.OfflineVotesImported && a.Details != null && a.Details.Contains("ExportId=" + file.Header.ExportId), ct),
             };
 
+            // CATCH-UP GA: members of a catch-up election who already voted in an earlier General Assembly will be refused at commit.
+            var votedEarlier = new HashSet<(int MemberId, int EventId)>();
+            foreach (var ev in await _db.Events.AsNoTracking().Where(e => eventIds.Contains(e.EventId)).ToListAsync(ct))
+            {
+                if (!GaCatchUp.Applies(ev)) continue;
+                var ids = votes.Where(v => v.EventId == ev.EventId).Select(v => v.MemberId).Distinct().ToList();
+                foreach (var m in await GaCatchUp.EarlierVoterIds(_db, ev).Where(m => ids.Contains(m)).Distinct().ToListAsync(ct))
+                    votedEarlier.Add((m, ev.EventId));
+            }
+
             foreach (var v in votes)
             {
-                if (!recorded.TryGetValue((v.MemberId, v.EventId), out var receipt)) res.NewVotes++;
+                if (votedEarlier.Contains((v.MemberId, v.EventId)) && !recorded.ContainsKey((v.MemberId, v.EventId))) res.MemberAlreadyVoted++;
+                else if (!recorded.TryGetValue((v.MemberId, v.EventId), out var receipt)) res.NewVotes++;
                 else if (string.Equals(receipt, v.ReceiptCode, StringComparison.Ordinal)) res.AlreadyRecorded++;
                 else res.MemberAlreadyVoted++;
             }

@@ -75,7 +75,8 @@ namespace EVoting.Api.Controllers
             BranchCount = branches?.Count ?? 0,
             CreatedAt = e.CreatedAt,
             UpdatedAt = e.UpdatedAt,
-            EventType = e.EventType
+            EventType = e.EventType,
+            IsCatchUp = e.IsCatchUp
         };
 
         [HttpGet]
@@ -134,6 +135,7 @@ namespace EVoting.Api.Controllers
                 ScheduleFrom = req.ScheduleFrom,
                 ScheduleTo = req.ScheduleTo,
                 EventType = EventTypes.Normalize(req.EventType)!,   // validated above; blank = GENERAL_ASSEMBLY
+                IsCatchUp = req.IsCatchUp == true,                  // validated above: General Assembly only
                 Status = "Closed",              // the scheduler (or an admin) opens it later
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -153,7 +155,7 @@ namespace EVoting.Api.Controllers
                     EventId = ev.EventId, Position = r.Position, MinVotes = r.MinVotes, MaxVotes = r.MaxVotes, TotalSeats = r.TotalSeats
                 }));
             _audit.Stage(AuditActions.Create, AuditEntities.Event, ev.EventId,
-                $"Title='{ev.Title}', Type={ev.EventType}, Venue='{ev.Venue}', {ev.ScheduleFrom:yyyy-MM-dd HH:mm} → {ev.ScheduleTo:yyyy-MM-dd HH:mm}, Branches=[{string.Join(",", req.BranchIds.Distinct())}].");
+                $"Title='{ev.Title}', Type={ev.EventType}{(ev.IsCatchUp ? " (catch-up)" : "")}, Venue='{ev.Venue}', {ev.ScheduleFrom:yyyy-MM-dd HH:mm} → {ev.ScheduleTo:yyyy-MM-dd HH:mm}, Branches=[{string.Join(",", req.BranchIds.Distinct())}].");
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
@@ -183,12 +185,21 @@ namespace EVoting.Api.Controllers
                     "The participating branches cannot be changed while the election is open.",
                     "EVENT_OPEN_LOCK", "Close the election first, or leave the branch list unchanged.");
 
+            // CATCH-UP GA: the flag decides who may vote (members of an earlier General Assembly may not), so - like the branch list - it
+            // cannot change while ballots are being cast. Null = an older Admin build that does not know the flag: keep it.
+            bool catchUpChanged = req.IsCatchUp.HasValue && req.IsCatchUp.Value != ev.IsCatchUp;
+            if (catchUpChanged && ev.Status == "Opened")
+                return Fail(StatusCodes.Status409Conflict,
+                    "The catch-up setting cannot be changed while the election is open.",
+                    "EVENT_OPEN_LOCK", "Close the election first.");
+
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
             ev.Title = req.Title.Trim();
             ev.Venue = req.Venue.Trim();
             ev.ScheduleFrom = req.ScheduleFrom;
             ev.ScheduleTo = req.ScheduleTo;
+            if (catchUpChanged) ev.IsCatchUp = req.IsCatchUp!.Value;
             ev.UpdatedAt = DateTime.Now;
 
             if (branchesChanged)
@@ -208,7 +219,8 @@ namespace EVoting.Api.Controllers
 
             _audit.Stage(AuditActions.Update, AuditEntities.Event, id,
                 $"Title='{ev.Title}', Venue='{ev.Venue}', {ev.ScheduleFrom:yyyy-MM-dd HH:mm} → {ev.ScheduleTo:yyyy-MM-dd HH:mm}" +
-                (branchesChanged ? $", Branches=[{string.Join(",", wanted)}]." : "."));
+                (branchesChanged ? $", Branches=[{string.Join(",", wanted)}]" : "") +
+                (catchUpChanged ? $", CatchUp={ev.IsCatchUp}." : "."));
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
@@ -314,6 +326,7 @@ namespace EVoting.Api.Controllers
                 BranchNames = row.BranchNames, BranchCount = row.BranchCount,
                 CreatedAt = row.CreatedAt, UpdatedAt = row.UpdatedAt,
                 EventType = e.EventType,
+                IsCatchUp = e.IsCatchUp,
                 RosterLockedAt = e.RosterLockedAt,
                 EligibilityMinShareCapital = e.EligibilityMinShareCapital,
                 EligibilityMinSavingsDeposit = e.EligibilityMinSavingsDeposit,
@@ -348,6 +361,10 @@ namespace EVoting.Api.Controllers
                         "EVENT_TYPE_IMMUTABLE", "Create a new event of the other type instead.",
                         new() { ["eventType"] = "Cannot be changed." });
             }
+            // CATCH-UP GA: only a General Assembly can be the catch-up election.
+            var typeAfter = existing?.EventType ?? EventTypes.Normalize(r.EventType);
+            if (r.IsCatchUp == true && typeAfter != EventTypes.GeneralAssembly)
+                errors["isCatchUp"] = "Only a General Assembly election can be the catch-up election.";
             if (errors.Count > 0) return Invalid(errors);
 
             var ids = r.BranchIds.Distinct().ToList();

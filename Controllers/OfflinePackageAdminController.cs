@@ -95,11 +95,12 @@ namespace EVoting.Api.Controllers
                 .ToListAsync(ct);
 
             var qrThisElection = await RegistrationController.QrIssuedPerEventAsync(_db, eventId, null, ct);
+            var votedEarlier = await RegistrationController.VotedEarlierAsync(_db, eventId, null, ct);   // CATCH-UP GA (same as the roster)
 
             var payload = new RegistrationPackageFile.Payload
             {
                 Event = EventsController.MapEvent(ev),
-                Members = members.Select(m => RegistrationController.MapMember(m, qrThisElection)).ToList()
+                Members = members.Select(m => RegistrationController.MapMember(m, qrThisElection, votedEarlier)).ToList()
             };
             var now = DateTime.UtcNow;
             var written = RegistrationPackageFile.Write(payload, now);
@@ -193,6 +194,8 @@ namespace EVoting.Api.Controllers
             // ── members who already voted in this event (mobile, kiosks, earlier imports) ───────────────
             var voted = await _db.VoterLogs.AsNoTracking().Where(l => l.EventId == eventId && l.HasVoted)
                 .Select(l => l.MemberId).Distinct().ToListAsync(ct);
+            // CATCH-UP GA: members who voted in an earlier General Assembly count as "already voted" on the offline kiosk too.
+            voted = voted.Union(await GaCatchUp.EarlierVoterIds(_db, ev).Distinct().ToListAsync(ct)).ToList();
 
             var payload = new KioskPackageFile.Payload
             {

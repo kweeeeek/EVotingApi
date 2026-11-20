@@ -206,6 +206,9 @@ namespace EVoting.Api.Controllers
                 .Where(m => m.IsActive)
                 .ToListAsync(ct);
 
+            // CATCH-UP GA: members who voted in an earlier General Assembly are not eligible here, so an OFFLINE kiosk refuses them too.
+            var votedEarlier = (await GaCatchUp.EarlierVoterIds(_db, ev).Distinct().ToListAsync(ct)).ToHashSet();
+
             var snapshot = members.Select(m => new MemberSnapshotRow
             {
                 MemberId = m.MemberId,
@@ -216,7 +219,8 @@ namespace EVoting.Api.Controllers
                 // Same three conditions AuthController.VoterVerify checks online —
                 // kept in sync deliberately so offline and online agree.
                 IsEligible = m.IsEligibleToVote &&
-                              assignedBranchIds.Contains(m.BranchId),
+                              assignedBranchIds.Contains(m.BranchId) &&
+                              !votedEarlier.Contains(m.MemberId),
                 PhotoBase64 = m.MemberImage != null
                     ? Convert.ToBase64String(m.MemberImage) : null
             }).ToList();

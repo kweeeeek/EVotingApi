@@ -190,6 +190,12 @@ namespace EVoting.Api.Infrastructure.Entities
         [Column(TypeName = "decimal(18,2)")] public decimal? EligibilityMinShareCapital { get; set; }
         [Column(TypeName = "decimal(18,2)")] public decimal? EligibilityMinSavingsDeposit { get; set; }
 
+        /// <summary>
+        /// GENERAL_ASSEMBLY only: the "last chance" election after the regional General Assemblies (e.g. North and South). A member
+        /// who already voted in an earlier General Assembly (see GaCatchUp) may not vote in it. Column from deploy/sql/013.
+        /// </summary>
+        public bool IsCatchUp { get; set; }
+
         public bool IsRepresentative => EventType == EventTypes.Representative;
     }
 
