@@ -528,6 +528,10 @@ namespace EVoting.Api.Controllers
             if (hasVoted)
                 return Conflict(new ApiError { Error = "Member has already voted in this election." });
 
+            // CATCH-UP GA: the last-chance election is only for members who did not vote in an earlier General Assembly.
+            if (await Services.GaCatchUp.VotedEarlierAsync(_db, ev, member.MemberId, ct))
+                return Conflict(new ApiError { Error = Services.GaCatchUp.Message, Code = Services.GaCatchUp.Code });
+
             var voterToken = _tokens.GenerateVoterToken(member.MemberId, ev.EventId, member.MemberName);
             // BUG FIX: int.Parse throws on non-numeric config value; use TryParse with fallback.
             if (!int.TryParse(_config["Jwt:VoterTokenExpiryMinutes"], out int expiry))

@@ -61,7 +61,8 @@ namespace EVoting.Api.Controllers
                 .ToListAsync(ct);
 
             var perEvent = eventId.HasValue ? await QrIssuedPerEventAsync(_db, eventId.Value, members.Select(m => m.MemberId).ToList(), ct) : null;
-            return Ok(members.Select(m => MapMember(m, perEvent)));
+            var votedEarlier = eventId.HasValue ? await VotedEarlierAsync(_db, eventId.Value, members.Select(m => m.MemberId).ToList(), ct) : null;
+            return Ok(members.Select(m => MapMember(m, perEvent, votedEarlier)));
         }
 
         // ── GET /api/v1/registration/members/roster ────────────────────────────
@@ -96,7 +97,8 @@ namespace EVoting.Api.Controllers
                 branchIds.Count, members.Count);
 
             var perEvent = eventId.HasValue ? await QrIssuedPerEventAsync(_db, eventId.Value, null, ct) : null;
-            return Ok(members.Select(m => MapMember(m, perEvent)));
+            var votedEarlier = eventId.HasValue ? await VotedEarlierAsync(_db, eventId.Value, null, ct) : null;
+            return Ok(members.Select(m => MapMember(m, perEvent, votedEarlier)));
         }
 
         // ── POST /api/v1/registration/members/{id}/qr-issued ──────────────────
@@ -129,6 +131,10 @@ namespace EVoting.Api.Controllers
             var member = await _db.Members.FindAsync(new object[] { id }, ct);
             if (member == null)
                 return NotFound(new ApiError { Error = "Member not found." });
+
+            // CATCH-UP GA: no slip for a member who already voted in an earlier General Assembly (the page prints only after this succeeds).
+            if (await GaCatchUp.VotedEarlierAsync(_db, ev, id, ct))
+                return Conflict(new ApiError { Error = GaCatchUp.Message + " Do not hand out a slip.", Code = GaCatchUp.Code });
 
             var now = DateTime.UtcNow;
             member.QrIssuedAt = now;
@@ -321,6 +327,8 @@ namespace EVoting.Api.Controllers
                 });
             if (await _db.VoterLogs.AnyAsync(v => v.MemberId == id && v.EventId == ev.EventId && v.HasVoted, ct))
                 return Conflict(new ApiError { Error = "Member has already voted in this election.", Code = "ALREADY_VOTED" });
+            if (await GaCatchUp.VotedEarlierAsync(_db, ev, id, ct))
+                return Conflict(new ApiError { Error = GaCatchUp.Message, Code = GaCatchUp.Code });
 
             var now = DateTime.UtcNow;
             var issuer = Issuer();
@@ -406,11 +414,30 @@ namespace EVoting.Api.Controllers
         /// Like <see cref="MapMember(Infrastructure.Entities.MemberEntity)"/>, but QrIssuedAt is the member's QR IN ONE ELECTION
         /// (null when not issued in it). <paramref name="perEvent"/> null = the legacy Members.QrIssuedAt.
         /// </summary>
-        internal static RegistrationMemberResponse MapMember(Infrastructure.Entities.MemberEntity m, IReadOnlyDictionary<int, DateTime>? perEvent)
+        internal static RegistrationMemberResponse MapMember(Infrastructure.Entities.MemberEntity m, IReadOnlyDictionary<int, DateTime>? perEvent,
+                                                             IReadOnlySet<int>? votedEarlier = null)
         {
             var r = MapMember(m);
             if (perEvent != null) r.QrIssuedAt = perEvent.TryGetValue(m.MemberId, out var at) ? TimeConv.AsUtc(at) : null;
+            // CATCH-UP GA: shown as not eligible, with the reason, so the desk page refuses the slip before Issue (online and offline).
+            if (votedEarlier != null && votedEarlier.Contains(m.MemberId))
+            {
+                r.IsEligibleToVote = false;
+                r.VotingRemarks = VotedEarlierRemark;
+            }
             return r;
+        }
+
+        internal const string VotedEarlierRemark = "Already voted in an earlier General Assembly (North/South). This election is only for members who have not voted yet.";
+
+        /// <summary>CATCH-UP GA: who of <paramref name="memberIds"/> (null = everybody) voted in an earlier General Assembly; null when the election is not a catch-up one.</summary>
+        internal static async Task<IReadOnlySet<int>?> VotedEarlierAsync(ApiDbContext db, int eventId, List<int>? memberIds, CancellationToken ct)
+        {
+            var ev = await db.Events.AsNoTracking().FirstOrDefaultAsync(e => e.EventId == eventId && e.IsActive, ct);
+            if (ev == null || !GaCatchUp.Applies(ev)) return null;
+            var q = GaCatchUp.EarlierVoterIds(db, ev);
+            if (memberIds != null) q = q.Where(id => memberIds.Contains(id));
+            return (await q.Distinct().ToListAsync(ct)).ToHashSet();
         }
 
         internal static RegistrationMemberResponse MapMember(

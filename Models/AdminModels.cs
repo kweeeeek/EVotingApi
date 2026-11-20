@@ -387,6 +387,8 @@ namespace EVoting.Api.Models.Admin
         public DateTime UpdatedAt { get; set; }
         /// <summary>GENERAL_ASSEMBLY (default) or REPRESENTATIVE. Fixed when the event is created.</summary>
         public string EventType { get; set; } = "GENERAL_ASSEMBLY";
+        /// <summary>General Assembly only: the catch-up ("last chance") election; members who voted in an earlier General Assembly may not vote.</summary>
+        public bool IsCatchUp { get; set; }
     }
 
     public class EventDetail : EventRow
@@ -415,6 +417,9 @@ namespace EVoting.Api.Models.Admin
 
         /// <summary>GENERAL_ASSEMBLY (default when omitted) or REPRESENTATIVE. Honoured on create only; an update that names a different type is refused.</summary>
         [MaxLength(30)] public string? EventType { get; set; }
+
+        /// <summary>General Assembly only: the catch-up election (see GaCatchUp). Null on update = keep as it is (older Admin builds).</summary>
+        public bool? IsCatchUp { get; set; }
     }
 
     public class OpenEventRequest

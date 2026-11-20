@@ -170,6 +170,8 @@ namespace EVoting.Api.Services
                 var ev = await LoadActiveEventOrThrowAsync(
                     eventId,
                     ct);
+                // CATCH-UP GA: a member who voted in an earlier General Assembly may not vote here (see GaCatchUp).
+                await GaCatchUp.ThrowIfVotedEarlierAsync(_db, ev, memberId, ct);
 
                 await ValidateSelectionsOrThrowAsync(
                     selections,
@@ -337,6 +339,8 @@ namespace EVoting.Api.Services
                 var ev = await LoadActiveEventOrThrowAsync(
                     eventId,
                     ct);
+                // CATCH-UP GA: a member who voted in an earlier General Assembly may not vote here (see GaCatchUp).
+                await GaCatchUp.ThrowIfVotedEarlierAsync(_db, ev, memberId, ct);
 
                 await ValidateSelectionsOrThrowAsync(
                     selections,
@@ -552,6 +556,8 @@ namespace EVoting.Api.Services
                 var ev = await LoadActiveEventOrThrowAsync(
                     eventId,
                     ct);
+                // CATCH-UP GA: a member who voted in an earlier General Assembly may not vote here (see GaCatchUp).
+                await GaCatchUp.ThrowIfVotedEarlierAsync(_db, ev, memberId, ct);
 
                /* ValidateOnlineVotingWindowOrThrow(
                     ev, now);*/

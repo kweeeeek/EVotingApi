@@ -9,3 +9,7 @@ logs/
 !.env.example
 appsettings.Local.json
 appsettings.*.Local.json
+
+# Live database dumps (deploy/sql/dump-live-database.bat writes <db>-live-<stamp>.sql next to itself): member and vote data, NEVER commit
+deploy/sql/*-live-*.sql
+*-live-2*.sql
