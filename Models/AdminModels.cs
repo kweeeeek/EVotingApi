@@ -391,6 +391,15 @@ namespace EVoting.Api.Models.Admin
         public bool IsCatchUp { get; set; }
     }
 
+    /// <summary>A branch that another election of the same kind and year already uses (GET admin/events/branch-usage; see EventBranchExclusivity).</summary>
+    public class BranchUsageRow
+    {
+        public int BranchId { get; set; }
+        public string BranchName { get; set; } = "";
+        public int EventId { get; set; }
+        public string EventTitle { get; set; } = "";
+    }
+
     public class EventDetail : EventRow
     {
         public List<int> BranchIds { get; set; } = new();

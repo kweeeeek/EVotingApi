@@ -119,6 +119,22 @@ namespace EVoting.Api.Controllers
             return Ok(new AvailabilityResponse { Taken = taken });
         }
 
+        /// <summary>
+        /// The branches other elections of this kind already use in this year, so the editor can grey them out (see EventBranchExclusivity).
+        /// Empty for the catch-up General Assembly (<paramref name="catchUp"/> = true): it may take every branch.
+        /// </summary>
+        [HttpGet("branch-usage")]
+        [RequirePermission(PermissionCodes.EventView, PermissionCodes.EventAdd, PermissionCodes.EventEdit)]
+        public async Task<IActionResult> BranchUsage([FromQuery] string eventType, [FromQuery] int year, [FromQuery] int? exceptId,
+                                                     [FromQuery] bool catchUp = false, CancellationToken ct = default)
+        {
+            var type = EventTypes.Normalize(eventType);
+            if (type == null) return Invalid("eventType", "Event type must be GENERAL_ASSEMBLY or REPRESENTATIVE.");
+            if (year < 2000 || year > 9000) return Invalid("year", "The year is not valid.");
+            if (EventBranchExclusivity.IsExempt(type, catchUp)) return Ok(new List<BranchUsageRow>());
+            return Ok(await EventBranchExclusivity.UsageAsync(_db, type, year, exceptId, ct));
+        }
+
         // ── Create / Update ──────────────────────────────────────────────────
         [HttpPost]
         [RequirePermission(PermissionCodes.EventAdd)]
@@ -152,7 +168,11 @@ namespace EVoting.Api.Controllers
             if (ev.EventType == EventTypes.GeneralAssembly)
                 _db.EventPositionRules.AddRange(DefaultPositionRules.All.Select(r => new EventPositionRuleEntity
                 {
-                    EventId = ev.EventId, Position = r.Position, MinVotes = r.MinVotes, MaxVotes = r.MaxVotes, TotalSeats = r.TotalSeats
+                    EventId = ev.EventId,
+                    Position = r.Position,
+                    MinVotes = r.MinVotes,
+                    MaxVotes = r.MaxVotes,
+                    TotalSeats = r.TotalSeats
                 }));
             _audit.Stage(AuditActions.Create, AuditEntities.Event, ev.EventId,
                 $"Title='{ev.Title}', Type={ev.EventType}{(ev.IsCatchUp ? " (catch-up)" : "")}, Venue='{ev.Venue}', {ev.ScheduleFrom:yyyy-MM-dd HH:mm} → {ev.ScheduleTo:yyyy-MM-dd HH:mm}, Branches=[{string.Join(",", req.BranchIds.Distinct())}].");
@@ -214,7 +234,11 @@ namespace EVoting.Api.Controllers
             if (ev.EventType == EventTypes.GeneralAssembly && !await _db.EventPositionRules.AnyAsync(r => r.EventId == id, ct))
                 _db.EventPositionRules.AddRange(DefaultPositionRules.All.Select(r => new EventPositionRuleEntity
                 {
-                    EventId = id, Position = r.Position, MinVotes = r.MinVotes, MaxVotes = r.MaxVotes, TotalSeats = r.TotalSeats
+                    EventId = id,
+                    Position = r.Position,
+                    MinVotes = r.MinVotes,
+                    MaxVotes = r.MaxVotes,
+                    TotalSeats = r.TotalSeats
                 }));
 
             _audit.Stage(AuditActions.Update, AuditEntities.Event, id,
@@ -321,10 +345,16 @@ namespace EVoting.Api.Controllers
             var row = ToRow(e, branches);
             return new EventDetail
             {
-                EventId = row.EventId, Title = row.Title, Venue = row.Venue,
-                ScheduleFrom = row.ScheduleFrom, ScheduleTo = row.ScheduleTo, Status = row.Status,
-                BranchNames = row.BranchNames, BranchCount = row.BranchCount,
-                CreatedAt = row.CreatedAt, UpdatedAt = row.UpdatedAt,
+                EventId = row.EventId,
+                Title = row.Title,
+                Venue = row.Venue,
+                ScheduleFrom = row.ScheduleFrom,
+                ScheduleTo = row.ScheduleTo,
+                Status = row.Status,
+                BranchNames = row.BranchNames,
+                BranchCount = row.BranchCount,
+                CreatedAt = row.CreatedAt,
+                UpdatedAt = row.UpdatedAt,
                 EventType = e.EventType,
                 IsCatchUp = e.IsCatchUp,
                 RosterLockedAt = e.RosterLockedAt,
@@ -376,6 +406,33 @@ namespace EVoting.Api.Controllers
             int? exceptId = existing?.EventId;
             if (await _db.Events.AsNoTracking().AnyAsync(e => e.IsActive && e.Title == title && (exceptId == null || e.EventId != exceptId), ct))
                 return Duplicate("An event with this title already exists.", "title");
+
+            // One election per branch per kind per year (the catch-up General Assembly is exempt). Branches an existing event already
+            // has keep it, so an event created before this rule can still be edited.
+            var typeOfEvent = typeAfter!;
+            bool catchUpAfter = r.IsCatchUp ?? existing?.IsCatchUp ?? false;
+            if (!EventBranchExclusivity.IsExempt(typeOfEvent, catchUpAfter))
+            {
+                var toCheck = EventBranchExclusivity.BranchesToCheck(
+                    ids,
+                    existing == null ? null : (existing.ScheduleFrom.Year, EventBranchExclusivity.IsExempt(existing.EventType, existing.IsCatchUp)),
+                    existing?.EventBranches.Select(eb => eb.BranchId).ToList() ?? new List<int>(),
+                    r.ScheduleFrom.Year);
+                if (toCheck.Count > 0)
+                {
+                    var clashes = (await EventBranchExclusivity.UsageAsync(_db, typeOfEvent, r.ScheduleFrom.Year, exceptId, ct))
+                        .Where(u => toCheck.Contains(u.BranchId)).ToList();
+                    if (clashes.Count > 0)
+                    {
+                        var kind = typeOfEvent == EventTypes.Representative ? "Representative election" : "General Assembly";
+                        return Fail(StatusCodes.Status409Conflict,
+                            $"These branches are already in another {kind} of {r.ScheduleFrom.Year}: {EventBranchExclusivity.Describe(clashes)}.",
+                            EventBranchExclusivity.Code,
+                            $"A branch can take part in only one {kind} per year. Remove these branches, or remove them from the other event first.",
+                            new() { ["branchIds"] = "Some branches are already in another event of this kind." });
+                    }
+                }
+            }
 
             // Only ONE election can be open at a time, so two active events must never share a time window
             // (the scheduler would otherwise open both).
